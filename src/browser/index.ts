@@ -87,7 +87,7 @@ function shortModel(id: string): string {
 
 function clock(ts: string): string {
   const d = new Date(ts);
-  return Number.isNaN(d.getTime()) ? "--:--:--" : d.toLocaleTimeString();
+  return Number.isNaN(d.getTime()) ? "--:--:--" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
 function shortSession(id: string): string {
@@ -268,7 +268,9 @@ const plugin: PiWebPlugin = {
                   ${streaming
                     ? html`⚡ ~${fmtRate(live?.approxTps ?? 0)} <small>t/s streaming</small>${live?.stalled ? html` <small>STALLED</small>` : ""}`
                     : last
-                      ? html`⚡ ${fmtRate(last.tps)} <small>t/s last (${shortModel(last.model)})</small>${last.stalled ? html` <small>stalled mid-stream</small>` : ""}`
+                      ? last.streamed
+                        ? html`⚡ ${fmtRate(last.tps)} <small>t/s last (${shortModel(last.model)})</small>${last.stalled ? html` <small>stalled mid-stream</small>` : ""}`
+                        : html`⚡ – <small>last was replayed (${shortModel(last.model)})</small>`
                       : html`⚡ – <small>no data yet</small>`}
                 </p>
                 ${streaming
@@ -313,7 +315,7 @@ const plugin: PiWebPlugin = {
                         }
                       }}></label>
                     ${isTurns
-                      ? html`<table>
+                      ? html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
                           <thead><tr><th></th><th>Time</th><th>Turn</th><th>Sess</th><th>LLM</th><th>TTFT</th><th>Tools</th><th>Tool time</th><th>Total</th></tr></thead>
                           <tbody>
                             ${visibleT.flatMap((t) => {
@@ -341,7 +343,7 @@ const plugin: PiWebPlugin = {
                               return [row, detail];
                             })}
                           </tbody>
-                        </table>`
+                        </table></div>`
                       : isTools
                       ? html`<p>
                           ${listedTools.length} call(s) from ${state.turns.length} turn(s), sorted
@@ -365,7 +367,7 @@ const plugin: PiWebPlugin = {
                               </tbody>
                             </table>`
                           : ""}
-                        <table>
+                        <div style="overflow-x: auto;"><table style="white-space: nowrap;">
                           <thead><tr><th></th><th>Time</th><th>Sess</th><th>Turn</th><th>Tool</th><th>Secs</th></tr></thead>
                           <tbody>
                             ${visibleTools.map(
@@ -384,8 +386,8 @@ const plugin: PiWebPlugin = {
                               </tr>`,
                             )}
                           </tbody>
-                        </table>`
-                      : html`<table>
+                        </table></div>`
+                      : html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
                       <thead><tr><th></th><th>Time</th><th>Sess</th><th>Model</th><th>Out</th><th>Secs</th><th>t/s</th><th>TTFT</th><th>Hit</th></tr></thead>
                       <tbody>
                         ${visible.map(
@@ -402,7 +404,7 @@ const plugin: PiWebPlugin = {
                           </tr>`,
                         )}
                       </tbody>
-                    </table>`}
+                    </table></div>`}
                     <p>
                       <button ?disabled=${page <= 0} @click=${() => { state.page = page - 1; context.host.requestRender(); }}>‹ Prev</button>
                       <span>Page ${page + 1} of ${pages} (${listedCount} rows)</span>
@@ -444,6 +446,9 @@ const plugin: PiWebPlugin = {
               }
               const last = live?.last ?? state?.history[0];
               if (last) {
+                if (!last.streamed) {
+                  return [{ type: "text", text: "⚡ –", title: "Last message was replayed, not generated live" }];
+                }
                 return [{ type: "text", text: `⚡ ${fmtRate(last.tps)} t/s`, title: `Last message: ${last.output} tokens in ${(last.durationMs / 1000).toFixed(1)}s` }];
               }
               return [{ type: "text", text: "⚡ –", title: "No tokens/sec samples yet in this workspace" }];
