@@ -10,7 +10,7 @@ assistant message and agent turn; a PI WEB plugin renders it.
 |---|---|
 | PI WEB `TPS` tab — Messages | Live tok/s while streaming, last-message stats, sparkline, filterable + paginated history (filter by model, session or `#turn`). TTFT, cache-hit %, STALL / FAIL / replay marks. |
 | PI WEB `TPS` tab — Turns | One row per agent step: LLM slice (time, tok/s, TTFT) vs tool slice, totals, outcome. Rows expand to the tool breakdown. |
-| PI WEB `TPS` tab — Tools | Every tool call slowest-first plus most-expensive-tools totals. |
+| PI WEB `TPS` tab — Tools | Every tool call, newest- or slowest-first, plus most-expensive-tools totals. |
 | Workspace label | Glanceable `⚡ 42 t/s` next to the workspace name. |
 | Chat `/tps` | `/tps [n]`, `/tps live`, `/tps totals`, `/tps models`, `/tps turns [n]`, `/tps tools [n]`. |
 
@@ -20,9 +20,8 @@ PI WEB's plugin API does not expose yet — the rows are ready for it.
 
 ## Install
 
-In PI WEB: **Settings → Pi packages → install**
-`https://github.com/g8d3/pi-web-tps-monitor` (or `npm:pi-web-tps-monitor`
-once published), then **Settings → PI WEB plugins → enable TPS Monitor**, restart the session
+In PI WEB: **Settings → Pi packages → install** `npm:pi-web-tps-monitor`,
+then **Settings → PI WEB plugins → enable TPS Monitor**, restart the session
 daemon when safe (`systemctl --user restart pi-web-sessiond`), reload the
 browser. New sessions pick up the companion automatically; `/reload` an idle
 session to add it to a live one.

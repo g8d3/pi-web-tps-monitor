@@ -11,7 +11,7 @@ import { isTpsLive, normalizeSample, normalizeTurn, type TpsLive, type TpsSample
 const HISTORY_FILE = ".pi-web/tps-history.jsonl";
 const TURNS_FILE = ".pi-web/tps-turns.jsonl";
 const LIVE_FILE = ".pi-web/tps-live.json";
-const MAX_LIMIT = 100;
+const MAX_LIMIT = 500; // matches companion MAX_HISTORY so the panel can see every row on disk
 
 const UNKNOWN_LIVE: TpsLive = {
   state: "unknown",

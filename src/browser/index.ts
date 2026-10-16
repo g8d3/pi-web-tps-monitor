@@ -12,7 +12,7 @@ import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, 
 
 const POLL_MS = 2000;
 const FETCH_STALE_MS = 1500;
-const HISTORY_LIMIT = 100;
+const HISTORY_LIMIT = 500; // match companion MAX_HISTORY + server MAX_LIMIT: the panel sees every row on disk
 const PAGE_SIZE = 10;
 
 interface PanelState {
@@ -20,6 +20,7 @@ interface PanelState {
   history: TpsSample[];
   turns: TpsTurn[];
   view: "messages" | "turns" | "tools";
+  toolSort: "slow" | "recent";
   status: string;
   fetching: boolean;
   lastFetch: number;
@@ -109,14 +110,16 @@ interface ToolStat {
   fails: number;
 }
 
-function toolRows(turns: TpsTurn[]): ToolRow[] {
+function toolRows(turns: TpsTurn[], sort: "slow" | "recent"): ToolRow[] {
   const out: ToolRow[] = [];
   for (const t of turns) {
     for (const c of t.tools) {
       out.push({ ts: t.ts, sessionId: t.sessionId, turnIndex: t.turnIndex, name: c.name, durationMs: c.durationMs, isError: c.isError });
     }
   }
-  return out.sort((a, b) => b.durationMs - a.durationMs);
+  return sort === "slow"
+    ? out.sort((a, b) => b.durationMs - a.durationMs)
+    : out.sort((a, b) => b.ts.localeCompare(a.ts) || b.turnIndex - a.turnIndex || a.name.localeCompare(b.name));
 }
 
 function toolStats(rows: ToolRow[]): ToolStat[] {
@@ -167,7 +170,7 @@ const plugin: PiWebPlugin = {
       const key = keyFor(context.machine.id, context.workspace.projectId, context.workspace.id);
       let state = states.get(key);
       if (!state) {
-        state = { live: undefined, history: [], turns: [], view: "messages", status: "Loading…", fetching: false, lastFetch: 0, filter: "", page: 0, expanded: [] };
+        state = { live: undefined, history: [], turns: [], view: "messages", toolSort: "recent", status: "Loading…", fetching: false, lastFetch: 0, filter: "", page: 0, expanded: [] };
         states.set(key, state);
       }
       return state;
@@ -248,7 +251,7 @@ const plugin: PiWebPlugin = {
                         t.tools.some((c) => c.name.toLowerCase().includes(q))),
                   )
                 : [];
-              const allToolRows = isTools ? toolRows(state.turns) : [];
+              const allToolRows = isTools ? toolRows(state.turns, state.toolSort) : [];
               const listedTools = allToolRows.filter(
                 (r) => !q || r.name.toLowerCase().includes(q) || r.sessionId.toLowerCase().startsWith(q),
               );
@@ -340,7 +343,13 @@ const plugin: PiWebPlugin = {
                           </tbody>
                         </table>`
                       : isTools
-                      ? html`${statsTools.length
+                      ? html`<p>
+                          ${listedTools.length} call(s) from ${state.turns.length} turn(s), sorted
+                          <button ?disabled=${state.toolSort === "recent"} @click=${() => { state.toolSort = "recent"; state.page = 0; context.host.requestRender(); }}>Newest-first</button>
+                          <button ?disabled=${state.toolSort === "slow"} @click=${() => { state.toolSort = "slow"; state.page = 0; context.host.requestRender(); }}>Slowest-first</button>
+                          <br><small>Calls from the running step appear when it finishes.</small>
+                        </p>
+                        ${statsTools.length
                           ? html`<h4>Most expensive tools</h4>
                             <table>
                               <thead><tr><th>Tool</th><th>Calls</th><th>Total</th><th>Fails</th></tr></thead>
