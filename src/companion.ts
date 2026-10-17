@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
-import { contextPressure, fleetStats, fmtCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostUsd, sessionCostUsd, unaccountedMs } from "./browser/models.js";
+import { contextPressure, fleetStats, fmtCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostUsd, sessionCostUsd, turnWaste, unaccountedMs } from "./browser/models.js";
 
 const HISTORY_FILE = ".pi-web/tps-history.jsonl";
 const TURNS_FILE = ".pi-web/tps-turns.jsonl";
@@ -268,13 +268,14 @@ function renderFleet(history: TpsSample[], turns: TpsTurn[]): string {
   const rows = stats.map((f) => {
     const ctx = f.pressure === undefined ? "   –" : `${String(Math.round(f.pressure * 100)).padStart(3)}%${f.pressure >= 0.8 ? "!" : " "}`;
     const cost = f.unknownCost >= f.msgs ? "       –" : fmtCost(f.cost).padStart(8);
-    return `${shortSession(f.sessionId).padEnd(8)}  msgs ${String(f.msgs).padStart(3)}  turns ${String(f.turns).padStart(3)} (${String(f.done).padStart(3)} done)  ${fmtRate(f.avgTps).padStart(5)} t/s  tools ${(f.toolMs / 1000).toFixed(0).padStart(5)}s  ${cost}  ctx ${ctx}`;
+    const waste = f.wastedTurns === 0 ? "   –" : `${String(f.wastedTurns).padStart(2)}${f.wastedCost > 0 ? " " + fmtCost(f.wastedCost) : ""}`;
+    return `${shortSession(f.sessionId).padEnd(8)}  msgs ${String(f.msgs).padStart(3)}  turns ${String(f.turns).padStart(3)} (${String(f.done).padStart(3)} done)  ${fmtRate(f.avgTps).padStart(5)} t/s  tools ${(f.toolMs / 1000).toFixed(0).padStart(5)}s  ${cost}  waste ${waste}  ctx ${ctx}`;
   });
   return "```\n" + rows.join("\n") + "\n```";
 }
 
 function renderCost(history: TpsSample[], turns: TpsTurn[]): string {
-  if (!history.length) return "No samples yet.";
+  if (!history.length && !turns.length) return "No samples yet.";
   const rated = history.filter((s) => s.streamed && s.status === "ok");
   const input = history.reduce((a, s) => a + s.input, 0);
   const output = history.reduce((a, s) => a + s.output, 0);
@@ -288,8 +289,21 @@ function renderCost(history: TpsSample[], turns: TpsTurn[]): string {
     priced += 1;
   }
   const done = turns.filter((t) => t.outcome === "completed").length;
+  const waste = turnWaste(turns);
   const per = done > 0 && cost > 0 ? `  ≈ ${fmtCost(cost / done)}/completed turn` : "";
-  return `⚡ ${history.length} messages (${rated.length} rated), in ${input} / out ${output} / cached ${cached} tokens\nest ${fmtCost(cost)} across ${priced} priced messages (${history.length - priced} unpriced)${per}\n${turns.length} turns, ${done} completed`;}
+  // Waste is measured on turn rows, so its denominator is the turn-derived spend
+  // (not the message-derived `cost` above); unpriced wasted turns only count as turns.
+  const pct = waste.total > 0 ? Math.round((waste.cost / waste.total) * 100) : 0;
+  const wasted = waste.cost > 0 ? `, ${waste.turns} wasted ≈ ${fmtCost(waste.cost)} (${pct}% of turn spend)` : waste.turns > 0 ? `, ${waste.turns} wasted` : "";
+  const lines: string[] = [];
+  // Turn rows can outlive the (rotated) sample history, so report whatever is left.
+  if (history.length) {
+    lines.push(`⚡ ${history.length} messages (${rated.length} rated), in ${input} / out ${output} / cached ${cached} tokens`);
+    lines.push(`est ${fmtCost(cost)} across ${priced} priced messages (${history.length - priced} unpriced)${per}`);
+  }
+  lines.push(`${turns.length} turns, ${done} completed${wasted}`);
+  return lines.join("\n");
+}
 
 function renderTools(turns: TpsTurn[], limit: number): string {
   const calls = flattenTools(turns);

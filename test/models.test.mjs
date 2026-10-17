@@ -70,7 +70,41 @@ test("fleetStats rolls sessions up newest-first with cost and pressure", () => {
   assert.equal(stats[0].toolMs, 5000);
   assert.equal(stats[0].pressure, 0.95);
   assert.ok(stats[0].cost > 0);
+  assert.equal(stats[0].wastedTurns, 0);
+  assert.equal(stats[0].wastedCost, 0);
+  assert.ok(stats[0].turnCost > 0);
   assert.equal(stats[1].sessionId, "bbb");
+});
+
+test("isWastedTurn catches failures and empty turns", async () => {
+  const { isWastedTurn } = await import("../dist/browser/models.js");
+  assert.equal(isWastedTurn({ outcome: "completed", output: 12 }), false);
+  assert.equal(isWastedTurn({ outcome: "aborted", output: 12 }), true);
+  assert.equal(isWastedTurn({ outcome: "error", output: 0 }), true);
+  assert.equal(isWastedTurn({ outcome: "completed", output: 0 }), true);
+});
+
+test("turnWaste prices only wasted priced turns and keeps the denominator honest", async () => {
+  const { turnWaste } = await import("../dist/browser/models.js");
+  const turn = (over) => ({
+    ts: "2026-10-17T00:00:00.000Z", sessionId: "s", model: "x/sonnet-4", turnIndex: 0,
+    llmDurationMs: 100, ttftMs: 10, input: 0, output: 0, tps: 0,
+    streamed: true, approx: false, tools: [], toolMsTotal: 0, turnMsTotal: 100,
+    outcome: "completed", toolErrors: 0, ...over,
+  });
+  // sonnet: $3/M in, $15/M out. Wasted: error turn 15, aborted 0, empty 0.
+  const w = turnWaste([
+    turn({ outcome: "error", output: 1_000_000 }),
+    turn({ outcome: "aborted", output: 0 }),
+    turn({ output: 0 }),
+    turn({ input: 1_000_000, output: 1_000_000 }),
+    turn({ model: "qwen3-235b", outcome: "error" }),
+  ]);
+  assert.equal(w.turns, 4); // error + aborted + empty + one unpriced wasted
+  assert.equal(w.unpriced, 1);
+  assert.equal(w.cost, 15);
+  assert.equal(w.total, 33); // 15 wasted + 18 on the good turn
+  assert.ok(w.cost < w.total);
 });
 
 test("unaccounted gap flags big unexplained remainders only", async () => {

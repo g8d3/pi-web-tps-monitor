@@ -11,9 +11,9 @@ assistant message and agent turn; a PI WEB plugin renders it.
 | PI WEB `TPS` tab — Messages | Live tok/s while streaming, last-message stats, sparkline, filterable + paginated history (filter by model, session or `#turn`). TTFT, cache-hit %, STALL / FAIL / replay marks. |
 | PI WEB `TPS` tab — Turns | One row per agent step: LLM slice (time, tok/s, TTFT) vs tool slice, totals, outcome. Rows expand to the tool breakdown. |
 | PI WEB `TPS` tab — Tools | Every tool call, newest- or slowest-first, plus most-expensive-tools totals. |
-| PI WEB `TPS` tab — Fleet | Per-session rollup: messages, turns, done, avg t/s, tool time, estimated cost, context pressure. |
+| PI WEB `TPS` tab — Fleet | Per-session rollup: messages, turns, done, avg t/s, tool time, estimated cost, **wasted turns + their cost**, context pressure. |
 | Workspace label | Glanceable `⚡ 42 t/s` next to the workspace name. |
-| Chat `/tps` | `/tps [n]`, `/tps live`, `/tps totals`, `/tps models`, `/tps turns [n]`, `/tps tools [n]`, `/tps fleet`, `/tps cost`, `/tps budget [usd]` (session spend cap, default $5). Warns in chat at 80%/95% context pressure and at 80%/100% of session spend. |
+| Chat `/tps` | `/tps [n]`, `/tps live`, `/tps totals`, `/tps models`, `/tps turns [n]`, `/tps tools [n]`, `/tps fleet`, `/tps cost`, `/tps budget [usd]` (session spend cap, default $5). Warns in chat at 80%/95% context pressure and at 80%/100% of session spend. `/tps cost` and Fleet report wasted spend (failed, aborted or empty turns, priced from turn rows). |
 
 Sessions, turns and tools link to each other inside the tab (filter/expand/jump).
 Opening a PI WEB session or chat position from the tab needs host support that

@@ -413,7 +413,7 @@ const plugin: PiWebPlugin = {
                         </table></div>`
                       : isFleet
                       ? html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                      <thead><tr><th>Sess</th><th>Msgs</th><th>Turns</th><th>Done</th><th>t/s</th><th>Tools</th><th>Cost</th><th>Ctx</th></tr></thead>
+                      <thead><tr><th>Sess</th><th>Msgs</th><th>Turns</th><th>Done</th><th>t/s</th><th>Tools</th><th>Cost</th><th>Waste</th><th>Ctx</th></tr></thead>
                       <tbody>
                         ${visibleF.map(
                           (f) => html`<tr>
@@ -424,6 +424,7 @@ const plugin: PiWebPlugin = {
                             <td>${fmtRate(f.avgTps)}</td>
                             <td>${(f.toolMs / 1000).toFixed(0)}s</td>
                             <td>${f.unknownCost >= f.msgs ? "–" : fmtCost(f.cost)}</td>
+                            <td title="Turns that failed, aborted or produced no output">${f.wastedTurns === 0 ? "–" : `${f.wastedTurns}${f.wastedCost > 0 ? ` ${fmtCost(f.wastedCost)}` : ""}`}</td>
                             <td>${f.pressure === undefined ? "–" : `${Math.round(f.pressure * 100)}%${f.pressure >= 0.8 ? " ⚠" : ""}`}</td>
                           </tr>`,
                         )}

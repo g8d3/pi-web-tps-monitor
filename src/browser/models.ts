@@ -93,6 +93,44 @@ export function hasUnaccountedGap(turn: { turnMsTotal: number; llmDurationMs: nu
   return u > UNACCOUNTED_MIN_MS && u > turn.turnMsTotal * UNACCOUNTED_MIN_FRAC;
 }
 
+/** A turn that burned tokens without producing usable output: failed, aborted or empty. */
+export function isWastedTurn(t: Pick<TpsTurn, "outcome" | "output">): boolean {
+  return t.outcome !== "completed" || t.output === 0;
+}
+
+/** Priced cost estimate of one turn's LLM slice (no cache-read split at turn level). */
+export function turnCostUsd(t: Pick<TpsTurn, "model" | "input" | "output">): number | undefined {
+  return sampleCostUsd(t.model, t.input, t.output, 0);
+}
+
+export interface TurnWaste {
+  /** Wasted turn count. */
+  turns: number;
+  /** Estimated USD burned on wasted turns; turns with unknown prices are excluded. */
+  cost: number;
+  /** Wasted turns whose model has no list price. */
+  unpriced: number;
+  /** Estimated USD across every priced turn, wasted or not (the denominator). */
+  total: number;
+}
+
+/** Waste rollup for one session's turns, all numbers from the same turn rows. */
+export function turnWaste(turns: TpsTurn[]): TurnWaste {
+  const out: TurnWaste = { turns: 0, cost: 0, unpriced: 0, total: 0 };
+  for (const t of turns) {
+    const wasted = isWastedTurn(t);
+    if (wasted) out.turns += 1;
+    const c = turnCostUsd(t);
+    if (c === undefined) {
+      if (wasted) out.unpriced += 1;
+      continue;
+    }
+    out.total += c;
+    if (wasted) out.cost += c;
+  }
+  return out;
+}
+
 export interface SessionStat {
   sessionId: string;
   latestTs: string;
@@ -101,6 +139,13 @@ export interface SessionStat {
   turns: number;
   done: number;
   failedTurns: number;
+  /** Turns that burned tokens without usable output (failed, aborted, empty). */
+  wastedTurns: number;
+  /** Estimated USD burned on those turns; unpriced wasted turns counted apart. */
+  wastedCost: number;
+  wastedUnpriced: number;
+  /** Turn-derived spend estimate for this session (may differ from message-derived cost). */
+  turnCost: number;
   toolMs: number;
   /** Estimated USD from priced messages; unknowns counted separately. */
   cost: number;
@@ -135,6 +180,7 @@ export function fleetStats(history: TpsSample[], turns: TpsTurn[]): SessionStat[
     }
     const latest = [...samples.map((s) => s.ts), ...ts.map((t) => t.ts)].sort().at(-1) ?? "";
     const newest = [...samples].sort((a, b) => a.ts.localeCompare(b.ts)).at(-1);
+    const waste = turnWaste(ts);
     out.push({
       sessionId,
       latestTs: latest,
@@ -143,6 +189,10 @@ export function fleetStats(history: TpsSample[], turns: TpsTurn[]): SessionStat[
       turns: ts.length,
       done: ts.filter((t) => t.outcome === "completed").length,
       failedTurns: ts.filter((t) => t.outcome !== "completed").length,
+      wastedTurns: waste.turns,
+      wastedCost: waste.cost,
+      wastedUnpriced: waste.unpriced,
+      turnCost: waste.total,
       toolMs: ts.reduce((a, t) => a + t.toolMsTotal, 0),
       cost,
       unknownCost,
