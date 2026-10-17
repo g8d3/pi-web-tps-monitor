@@ -45,6 +45,21 @@ Read it that way: if you want the numbers, this tool gives them to you for free
 and forever. If you want someone to tell you when they get worse, and what to do
 about it, that is the retainer.
 
+## Where the numbers come from, and who to hire
+
+Every claim in this README is measured, and the measurement is public: the working
+paper (65 runs across 3 harnesses, plus 500 turns from our own live fleet), the raw
+CSV and the analysis script are at **<https://focalis.cc/tps/>**, and the offer page
+for the audit and the retainer is at **<https://focalis.cc/audit/>** (with a
+calculator you can run on your own numbers — it will tell you not to buy if the
+numbers do not support it).
+
+That paper also retracts three mechanisms we used to sell (cache discipline,
+startup-scan scoping, a size coefficient) because they failed to reproduce in our
+own data. We mention it here because it is the same standard this README is held to.
+
+Contact: **hola@focalis.cc**.
+
 ## Reading the numbers
 
 - **Cost is an estimate, not an invoice.** It comes from the indicative list
