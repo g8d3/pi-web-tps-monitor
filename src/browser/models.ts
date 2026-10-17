@@ -52,6 +52,23 @@ export function sampleCostUsd(model: string, input: number, output: number, cach
   return (input / 1_000_000) * info.inputPerMTok + (output / 1_000_000) * info.outputPerMTok + cache;
 }
 
+/** Accumulated priced spend for one session; unpriced messages counted separately. */
+export function sessionCostUsd(samples: TpsSample[], sessionId: string): { cost: number; priced: number; unpriced: number } {
+  let cost = 0;
+  let priced = 0;
+  let unpriced = 0;
+  for (const s of samples) {
+    if (s.sessionId !== sessionId) continue;
+    const c = sampleCostUsd(s.model, s.input, s.output, s.cacheRead);
+    if (c === undefined) unpriced += 1;
+    else {
+      cost += c;
+      priced += 1;
+    }
+  }
+  return { cost, priced, unpriced };
+}
+
 export function fmtCost(usd: number): string {
   return `$${usd.toFixed(usd < 0.1 ? 4 : 2)}`;
 }

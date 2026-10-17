@@ -13,7 +13,7 @@ assistant message and agent turn; a PI WEB plugin renders it.
 | PI WEB `TPS` tab — Tools | Every tool call, newest- or slowest-first, plus most-expensive-tools totals. |
 | PI WEB `TPS` tab — Fleet | Per-session rollup: messages, turns, done, avg t/s, tool time, estimated cost, context pressure. |
 | Workspace label | Glanceable `⚡ 42 t/s` next to the workspace name. |
-| Chat `/tps` | `/tps [n]`, `/tps live`, `/tps totals`, `/tps models`, `/tps turns [n]`, `/tps tools [n]`, `/tps fleet`, `/tps cost`. Warns in chat at 80%/95% context pressure. |
+| Chat `/tps` | `/tps [n]`, `/tps live`, `/tps totals`, `/tps models`, `/tps turns [n]`, `/tps tools [n]`, `/tps fleet`, `/tps cost`, `/tps budget [usd]` (session spend cap, default $5). Warns in chat at 80%/95% context pressure and at 80%/100% of session spend. |
 
 Sessions, turns and tools link to each other inside the tab (filter/expand/jump).
 Opening a PI WEB session or chat position from the tab needs host support that

@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
-import { contextPressure, fleetStats, fmtCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostUsd, unaccountedMs } from "./browser/models.js";
+import { contextPressure, fleetStats, fmtCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostUsd, sessionCostUsd, unaccountedMs } from "./browser/models.js";
 
 const HISTORY_FILE = ".pi-web/tps-history.jsonl";
 const TURNS_FILE = ".pi-web/tps-turns.jsonl";
@@ -18,6 +18,9 @@ const MAX_HISTORY = 500;
 
 /** Mutable only so tests can shrink the stall window; leave at default in prod. */
 export const tuning = { stallThresholdMs: 3000 };
+
+/** Session spend cap in USD. Default mirrors needs.json `default_budget_usd`. */
+export const DEFAULT_BUDGET_USD = 5;
 
 interface ActiveMessage {
   startedAt: number;
@@ -317,12 +320,25 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
   let turn: ActiveTurn | undefined;
   let acc: TurnLlmAcc = freshAcc();
   const pressureBand = new Map<string, number>();
+  const budgets = new Map<string, number>();
+  const budgetBand = new Map<string, number>();
+
+  const budgetFor = (sessionId: string): number => budgets.get(sessionId) ?? DEFAULT_BUDGET_USD;
+
+  function renderBudget(cwd: string, sessionId: string): string {
+    const budget = budgetFor(sessionId);
+    const { cost } = sessionCostUsd(readHistory(cwd, MAX_HISTORY), sessionId);
+    const pct = budget > 0 ? Math.round((cost / budget) * 100) : 0;
+    return `💰 session ${shortSession(sessionId)} spend ${fmtCost(cost)} of ${fmtCost(budget)} budget (${pct}%)`;
+  }
 
   pi.on("session_start", () => {
     active = undefined;
     turn = undefined;
     acc = freshAcc();
     pressureBand.clear();
+    budgets.clear();
+    budgetBand.clear();
   });
 
   pi.on("session_shutdown", () => {
@@ -330,6 +346,8 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     turn = undefined;
     acc = freshAcc();
     pressureBand.clear();
+    budgets.clear();
+    budgetBand.clear();
   });
 
   pi.on("message_start", (event, ctx) => {
@@ -430,6 +448,22 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       sessionId: sessionIdOf(ctx),
     };
     appendSample(ctx.cwd, sample);
+    // Session budget guardrail: history-backed so it survives restarts.
+    // Unpriced models (undefined cost) never trip it.
+    const total = sessionCostUsd(readHistory(ctx.cwd, MAX_HISTORY), sample.sessionId).cost;
+    const cap = budgetFor(sample.sessionId);
+    const frac = cap > 0 ? total / cap : 0;
+    const band = frac >= 1 ? 1 : frac >= 0.8 ? 0.8 : 0;
+    const prevBand = budgetBand.get(sample.sessionId) ?? 0;
+    if (band > prevBand) {
+      budgetBand.set(sample.sessionId, band);
+      ctx.ui.notify(
+        band >= 1
+          ? `💰 Session spend ${fmtCost(total)} hit 100% of the ${fmtCost(cap)} budget (${shortModel(sample.model)}) — further replies keep billing. Raise it with /tps budget <usd>.`
+          : `💰 Session spend ${fmtCost(total)} passed 80% of the ${fmtCost(cap)} budget (${shortModel(sample.model)}) — consider /tps budget <usd> or wrapping up.`,
+        "warning",
+      );
+    }
     const pressure = contextPressure(sample.model, sample.input, sample.cacheRead);
     if (pressure !== undefined) {
       const band = pressure >= 0.95 ? 0.95 : pressure >= 0.8 ? 0.8 : 0;
@@ -515,9 +549,28 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("tps", {
-    description: "Show tokens/sec: /tps [n] recent, /tps live, /tps totals, /tps models, /tps turns [n], /tps tools [n]",
+    description: "Show tokens/sec: /tps [n] recent, /tps live, /tps totals, /tps models, /tps turns [n], /tps tools [n], /tps budget [usd]",
     handler: async (args, ctx: ExtensionContext) => {
       const [sub, rawN] = args.trim().split(/\s+/);
+      if (sub === "budget") {
+        const sid = sessionIdOf(ctx);
+        if (rawN === undefined || rawN === "") {
+          ctx.ui.notify(renderBudget(ctx.cwd, sid), "info");
+          return;
+        }
+        const usd = parseFloat(rawN);
+        if (!Number.isFinite(usd) || usd <= 0) {
+          ctx.ui.notify(`Usage: /tps budget [usd] — positive number, e.g. /tps budget 5. ${renderBudget(ctx.cwd, sid)}`, "info");
+          return;
+        }
+        budgets.set(sid, usd);
+        // Sync the warned band so lowering the cap under current spend reports
+        // the overage once in the confirmation instead of nagging every message.
+        const frac = sessionCostUsd(readHistory(ctx.cwd, MAX_HISTORY), sid).cost / usd;
+        budgetBand.set(sid, frac >= 1 ? 1 : frac >= 0.8 ? 0.8 : 0);
+        ctx.ui.notify(`💰 session budget set to ${fmtCost(usd)}. ${renderBudget(ctx.cwd, sid)}`, "info");
+        return;
+      }
       if (sub === "tools") {
         const n = Math.min(100, Math.max(1, parseInt(rawN ?? "10", 10) || 10));
         ctx.ui.notify(renderTools(readTurns(ctx.cwd, MAX_HISTORY), n), "info");
