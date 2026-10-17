@@ -14,6 +14,9 @@ const POLL_MS = 2000;
 const FETCH_STALE_MS = 1500;
 const HISTORY_LIMIT = 500; // match companion MAX_HISTORY + server MAX_LIMIT: the panel sees every row on disk
 const PAGE_SIZE = 10;
+// Sparkline shows the most recent rated messages only: flex gaps never shrink,
+// so 500 bars would force ~1000px of pure gap and overflow any screen.
+const SPARKLINE_LIMIT = 100;
 
 interface PanelState {
   live: TpsLive | undefined;
@@ -223,7 +226,7 @@ const plugin: PiWebPlugin = {
               const streaming = live?.state === "streaming";
               const last: TpsSample | undefined = streaming ? undefined : (live?.last ?? state.history[0]);
               const rated = state.history.filter((s) => s.streamed && s.status === "ok");
-              const chrono = [...rated].reverse();
+              const chrono = rated.slice(0, SPARKLINE_LIMIT).reverse();
               const max = Math.max(1, ...chrono.map((s) => s.tps));
               const stats = modelStats(state.history);
               const q = state.filter.trim().toLowerCase();
