@@ -12,7 +12,12 @@ export interface TpsSample {
   input: number;
   output: number;
   durationMs: number;
+  /** Tokens/second over the whole window (blended: includes time-to-first-token). */
   tps: number;
+  /** Decode rate: output tokens over the window AFTER the first token arrived
+   * (durationMs - ttftMs). This is generation speed; `tps` above blends in the
+   * pre-first-token latency. UNKNOWN for rows where TTFT was not observed. */
+  decodeTps?: number;
   approx: boolean;
   /** ms from message start to first streamed token; UNKNOWN_TTFT when unobserved. */
   ttftMs: number;
@@ -45,7 +50,10 @@ export interface TpsTurn {
   ttftMs: number;
   input: number;
   output: number;
+  /** Blended rate over the whole turn (includes pre-first-token latency). */
   tps: number;
+  /** Decode rate: llmMessages output over the post-first-token window. */
+  decodeTps?: number;
   streamed: boolean;
   approx: boolean;
   tools: TpsToolCall[];
@@ -88,6 +96,7 @@ export function isTpsSample(v: unknown): v is TpsSample {
     typeof v.output === "number" &&
     typeof v.durationMs === "number" &&
     typeof v.tps === "number" &&
+    isOptionalNumber(v, "decodeTps") &&
     typeof v.approx === "boolean" &&
     isOptionalNumber(v, "ttftMs") &&
     (v.stalled === undefined || typeof v.stalled === "boolean") &&
@@ -99,6 +108,20 @@ export function isTpsSample(v: unknown): v is TpsSample {
     (v.stopReason === undefined || typeof v.stopReason === "string") &&
     (v.sessionId === undefined || typeof v.sessionId === "string")
   );
+}
+
+/** Decode rate: output over the post-first-token window. Falls back to the stored
+ * field (new rows), else computes from tps-blended figures, else UNKNOWN (-1). */
+export function decodeRateOf(v: {
+  output: number;
+  durationMs: number;
+  ttftMs?: number;
+  decodeTps?: number;
+}): number {
+  if (typeof v.decodeTps === "number" && v.decodeTps >= 0) return v.decodeTps;
+  const ttft = typeof v.ttftMs === "number" ? v.ttftMs : UNKNOWN_TTFT;
+  const window = v.durationMs - (ttft >= 0 ? ttft : 0);
+  return window > 0 ? Math.round((v.output / (window / 1000)) * 10) / 10 : UNKNOWN_TTFT;
 }
 
 /** Fill v1/v2-row gaps with defaults so readers see one uniform shape. */
@@ -120,6 +143,7 @@ export function normalizeSample(v: unknown): TpsSample | undefined {
     tps: v.tps,
     approx: v.approx,
     ttftMs: typeof v.ttftMs === "number" ? v.ttftMs : UNKNOWN_TTFT,
+    decodeTps: decodeRateOf(v),
     stalled: v.stalled ?? false,
     cacheRead: v.cacheRead ?? 0,
     cacheWrite: v.cacheWrite ?? 0,
@@ -155,8 +179,9 @@ export function isTpsTurn(v: unknown): v is TpsTurn {
   if (typeof v.toolMsTotal !== "number" || typeof v.turnMsTotal !== "number") return false;
   if (v.outcome !== "completed" && v.outcome !== "aborted" && v.outcome !== "error") return false;
   if (typeof v.toolErrors !== "number") return false;
-  if (v.requestedTools !== undefined && typeof v.requestedTools !== "number") return false;
-  if (v.llmMessages !== undefined && typeof v.llmMessages !== "number") return false;
+  if (typeof v.requestedTools !== "undefined" && typeof v.requestedTools !== "number") return false;
+  if (typeof v.llmMessages !== "undefined" && typeof v.llmMessages !== "number") return false;
+  if (typeof v.decodeTps !== "undefined" && typeof v.decodeTps !== "number") return false;
   return true;
 }
 
@@ -169,10 +194,15 @@ function isTpsToolCall(v: unknown): v is TpsToolCall {
 /** Pre-v15 rows lack requestedTools/llmMessages; backfill neutral defaults. */
 export function normalizeTurn(v: unknown): TpsTurn | undefined {
   if (!isTpsTurn(v)) return undefined;
-  const raw = v as unknown as { requestedTools?: unknown; llmMessages?: unknown };
+  const raw = v as unknown as { requestedTools?: unknown; llmMessages?: unknown; decodeTps?: unknown };
+  const decodeTps =
+    typeof raw.decodeTps === "number"
+      ? raw.decodeTps
+      : decodeRateOf({ output: v.output, durationMs: v.llmDurationMs, ttftMs: v.ttftMs });
   return {
     ...v,
     requestedTools: typeof raw.requestedTools === "number" ? raw.requestedTools : v.tools.length,
     llmMessages: typeof raw.llmMessages === "number" ? raw.llmMessages : 1,
+    ...(decodeTps >= 0 ? { decodeTps } : {}),
   };
 }

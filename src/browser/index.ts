@@ -9,6 +9,7 @@ import type {
   WorkspacePanelHost,
 } from "@jmfederico/pi-web/plugin-api";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsTurn } from "./protocol.js";
+
 import { contextPressure, fleetStats, fmtCost, hasUnaccountedGap, unaccountedMs } from "./models.js";
 
 const POLL_MS = 2000;
@@ -44,6 +45,11 @@ function fmtRate(n: number): string {
 function fmtMs(ms: number): string {
   if (ms < 0) return "–";
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** Decode rate cell: generation speed after the first token, else "–". */
+function decodeRate(n: number | undefined): string {
+  return typeof n === "number" && n >= 0 ? fmtRate(n) : "–";
 }
 
 function cacheHit(s: TpsSample): string {
@@ -338,7 +344,7 @@ const plugin: PiWebPlugin = {
                       }}></label>
                     ${isTurns
                       ? html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                          <thead><tr><th></th><th>Time</th><th>Turn</th><th class="tps-narrow-hide">Msgs</th><th class="tps-narrow-hide">Sess</th><th>LLM</th><th>t/s</th><th class="tps-narrow-hide">TTFT</th><th>Tools</th><th class="tps-narrow-hide">Tool time</th><th>Total</th></tr></thead>
+                          <thead><tr><th></th><th>Time</th><th>Turn</th><th class="tps-narrow-hide">Msgs</th><th class="tps-narrow-hide">Sess</th><th>LLM</th><th>t/s</th><th class="tps-narrow-hide">Dec</th><th class="tps-narrow-hide">TTFT</th><th>Tools</th><th class="tps-narrow-hide">Tool time</th><th>Total</th></tr></thead>
                           <tbody>
                             ${visibleT.flatMap((t) => {
                               const key = `${t.sessionId}#${t.turnIndex}`;
@@ -355,6 +361,7 @@ const plugin: PiWebPlugin = {
                                 <td class="tps-narrow-hide"><button @click=${() => { gotoSession(t.sessionId); }} title="Show only this session">${shortSession(t.sessionId)}</button></td>
                                 <td>${t.streamed ? html`${(t.llmDurationMs / 1000).toFixed(1)}s` : html`–`}</td>
                                 <td>${t.streamed ? html`${fmtRate(t.tps)}` : html`–`}</td>
+                                <td class="tps-narrow-hide">${t.streamed ? decodeRate(t.decodeTps) : "–"}</td>
                                 <td class="tps-narrow-hide">${fmtMs(t.ttftMs)}</td>
                                 <td>${t.tools.length ? t.tools.slice(0, 3).map((c) => c.name).join(", ") : "–"}</td>
                                 <td class="tps-narrow-hide">${(t.toolMsTotal / 1000).toFixed(1)}s</td>
@@ -431,7 +438,7 @@ const plugin: PiWebPlugin = {
                       </tbody>
                     </table></div>`
                       : html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                      <thead><tr><th></th><th>Time</th><th class="tps-narrow-hide">Sess</th><th>Model</th><th>Out</th><th class="tps-narrow-hide">Secs</th><th>t/s</th><th>TTFT</th><th class="tps-narrow-hide">Hit</th><th class="tps-narrow-hide">Ctx</th></tr></thead>
+                      <thead><tr><th></th><th>Time</th><th class="tps-narrow-hide">Sess</th><th>Model</th><th>Out</th><th class="tps-narrow-hide">Secs</th><th>t/s</th><th class="tps-narrow-hide">Dec</th><th>TTFT</th><th class="tps-narrow-hide">Hit</th><th class="tps-narrow-hide">Ctx</th></tr></thead>
                       <tbody>
                         ${visible.map(
                           (s) => html`<tr title=${titleOf(s)}>
@@ -442,6 +449,7 @@ const plugin: PiWebPlugin = {
                             <td>${s.output}</td>
                             <td class="tps-narrow-hide">${(s.durationMs / 1000).toFixed(1)}</td>
                             <td>${s.streamed ? html`${s.approx ? "~" : ""}${fmtRate(s.tps)}` : html`–`}</td>
+                            <td class="tps-narrow-hide">${s.streamed ? decodeRate(s.decodeTps) : "–"}</td>
                             <td>${fmtMs(s.ttftMs)}</td>
                             <td class="tps-narrow-hide">${cacheHit(s)}</td>
                             <td class="tps-narrow-hide">${ctxCell(s)}</td>

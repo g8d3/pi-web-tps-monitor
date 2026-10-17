@@ -5,7 +5,7 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
+import { decodeRateOf, isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
 import { contextPressure, fleetStats, fmtCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostUsd, sessionCostUsd, turnWaste, unaccountedMs } from "./browser/models.js";
 
 const HISTORY_FILE = ".pi-web/tps-history.jsonl";
@@ -494,6 +494,10 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     // averages) rather than as a rate.
     const streamed = finished.deltas > 0 && output > 0 && durationMs >= tuning.minStreamMs;
     const tps = streamed ? Math.round((output / (durationMs / 1000)) * 10) / 10 : 0;
+    const ttftMs = streamed && finished.firstTokenAt !== undefined ? finished.firstTokenAt - finished.startedAt : UNKNOWN_TTFT;
+    // Decode rate: generation speed over the window after the first token landed,
+    // so a slow provider (long TTFT) is not scored as a slow decoder.
+    const decodeTps = streamed ? decodeRateOf({ output, durationMs, ttftMs }) : UNKNOWN_TTFT;
     const sample: TpsSample = {
       ts: new Date().toISOString(),
       model: ctx.model?.id ?? finished.model,
@@ -501,8 +505,9 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       output,
       durationMs,
       tps,
+      ...(decodeTps >= 0 ? { decodeTps } : {}),
       approx: usage == null,
-      ttftMs: streamed && finished.firstTokenAt !== undefined ? finished.firstTokenAt - finished.startedAt : UNKNOWN_TTFT,
+      ttftMs,
       stalled: finished.stalled,
       cacheRead: usage?.cacheRead ?? 0,
       cacheWrite: usage?.cacheWrite ?? 0,
@@ -587,6 +592,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     const tools = turn?.tools ?? [];
     const toolMsTotal = tools.reduce((a, t) => a + t.durationMs, 0);
     const tps = acc.streamed && acc.durationMs > 0 ? Math.round((acc.output / (acc.durationMs / 1000)) * 10) / 10 : 0;
+    const decodeTps = acc.streamed ? decodeRateOf({ output: acc.output, durationMs: acc.durationMs, ttftMs: acc.ttftMs }) : UNKNOWN_TTFT;
     const row: TpsTurn = {
       ts: new Date().toISOString(),
       sessionId: sessionIdOf(ctx),
@@ -597,6 +603,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       input: acc.input,
       output: acc.output,
       tps,
+      ...(decodeTps >= 0 ? { decodeTps } : {}),
       streamed: acc.streamed,
       approx: acc.approx,
       tools,

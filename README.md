@@ -8,8 +8,8 @@ assistant message and agent turn; a PI WEB plugin renders it.
 
 | Surface | Details |
 |---|---|
-| PI WEB `TPS` tab — Messages | Live tok/s while streaming, last-message stats, sparkline, filterable + paginated history (filter by model, session or `#turn`). TTFT, cache-hit %, STALL / FAIL / replay marks. |
-| PI WEB `TPS` tab — Turns | One row per agent step: LLM slice (time, tok/s, TTFT) vs tool slice, totals, outcome. Rows expand to the tool breakdown. |
+| PI WEB `TPS` tab — Messages | Live tok/s while streaming, last-message stats, sparkline, filterable + paginated history (filter by model, session or `#turn`). TTFT, **decode tok/s (generation speed after the first token)**, cache-hit %, STALL / FAIL / replay marks. |
+| PI WEB `TPS` tab — Turns | One row per agent step: LLM slice (time, blended tok/s, **decode tok/s**, TTFT) vs tool slice, totals, outcome. Rows expand to the tool breakdown. |
 | PI WEB `TPS` tab — Tools | Every tool call, newest- or slowest-first, plus most-expensive-tools totals. |
 | PI WEB `TPS` tab — Fleet | Per-session rollup: messages, turns, done, avg t/s, tool time, estimated cost, **wasted turns + their cost**, context pressure. |
 | Workspace label | Glanceable `⚡ 42 t/s` next to the workspace name. |
