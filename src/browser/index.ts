@@ -263,7 +263,12 @@ const plugin: PiWebPlugin = {
               const visibleTools = listedTools.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
               const statsTools = toolStats(listedTools);
 
-              return html`<section>
+              return html`<section><style>
+  @media (max-width: 640px) {
+    .tps-narrow-hide { display: none; }
+    td.tps-model { display: inline-block; max-width: 15ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  }
+</style>
                 <p style="font-size: 1.6em; margin: 0.4em 0;">
                   ${streaming
                     ? html`⚡ ~${fmtRate(live?.approxTps ?? 0)} <small>t/s streaming</small>${live?.stalled ? html` <small>STALLED</small>` : ""}`
@@ -293,7 +298,7 @@ const plugin: PiWebPlugin = {
                   ${chrono.map(
                     (s) => html`<span
                       title="${clock(s.ts)} ${s.tps} t/s ${shortModel(s.model)}"
-                      style="flex: 1; min-width: 3px; background: currentColor; opacity: 0.65; height: ${Math.max(4, Math.round((s.tps / max) * 100))}%;"
+                      style="flex: 1 1 0; min-width: 0; background: currentColor; opacity: 0.65; height: ${Math.max(4, Math.round((s.tps / max) * 100))}%;"
                     ></span>`,
                   )}
                 </p>
@@ -316,7 +321,7 @@ const plugin: PiWebPlugin = {
                       }}></label>
                     ${isTurns
                       ? html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                          <thead><tr><th></th><th>Time</th><th>Turn</th><th>Sess</th><th>LLM</th><th>TTFT</th><th>Tools</th><th>Tool time</th><th>Total</th></tr></thead>
+                          <thead><tr><th></th><th>Time</th><th>Turn</th><th class="tps-narrow-hide">Sess</th><th>LLM</th><th class="tps-narrow-hide">TTFT</th><th>Tools</th><th>Tool time</th><th>Total</th></tr></thead>
                           <tbody>
                             ${visibleT.flatMap((t) => {
                               const key = `${t.sessionId}#${t.turnIndex}`;
@@ -329,9 +334,9 @@ const plugin: PiWebPlugin = {
                                 <td>${t.outcome === "completed" ? toggle : html`✗ ${toggle}`}</td>
                                 <td>${clock(t.ts)}</td>
                                 <td>#${t.turnIndex}</td>
-                                <td><button @click=${() => { gotoSession(t.sessionId); }} title="Show only this session">${shortSession(t.sessionId)}</button></td>
+                                <td class="tps-narrow-hide"><button @click=${() => { gotoSession(t.sessionId); }} title="Show only this session">${shortSession(t.sessionId)}</button></td>
                                 <td>${t.streamed ? html`${(t.llmDurationMs / 1000).toFixed(1)}s ${fmtRate(t.tps)}` : html`–`}</td>
-                                <td>${fmtMs(t.ttftMs)}</td>
+                                <td class="tps-narrow-hide">${fmtMs(t.ttftMs)}</td>
                                 <td>${t.tools.length ? t.tools.slice(0, 3).map((c) => c.name).join(",") + (t.tools.length > 3 ? `+${t.tools.length - 3}` : "") : "–"}</td>
                                 <td>${(t.toolMsTotal / 1000).toFixed(1)}s</td>
                                 <td>${(t.turnMsTotal / 1000).toFixed(1)}s</td>
@@ -368,13 +373,13 @@ const plugin: PiWebPlugin = {
                             </table>`
                           : ""}
                         <div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                          <thead><tr><th></th><th>Time</th><th>Sess</th><th>Turn</th><th>Tool</th><th>Secs</th></tr></thead>
+                          <thead><tr><th></th><th>Time</th><th class="tps-narrow-hide">Sess</th><th>Turn</th><th>Tool</th><th>Secs</th></tr></thead>
                           <tbody>
                             ${visibleTools.map(
                               (r) => html`<tr>
                                 <td>${r.isError ? "✗" : ""}</td>
                                 <td>${clock(r.ts)}</td>
-                                <td><button @click=${() => { gotoSession(r.sessionId); }} title="Show only this session">${shortSession(r.sessionId)}</button></td>
+                                <td class="tps-narrow-hide"><button @click=${() => { gotoSession(r.sessionId); }} title="Show only this session">${shortSession(r.sessionId)}</button></td>
                                 <td>#${r.turnIndex}</td>
                                 <td><button @click=${() => {
                                   state.view = "turns";
@@ -388,19 +393,19 @@ const plugin: PiWebPlugin = {
                           </tbody>
                         </table></div>`
                       : html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                      <thead><tr><th></th><th>Time</th><th>Sess</th><th>Model</th><th>Out</th><th>Secs</th><th>t/s</th><th>TTFT</th><th>Hit</th></tr></thead>
+                      <thead><tr><th></th><th>Time</th><th class="tps-narrow-hide">Sess</th><th>Model</th><th>Out</th><th class="tps-narrow-hide">Secs</th><th>t/s</th><th>TTFT</th><th class="tps-narrow-hide">Hit</th></tr></thead>
                       <tbody>
                         ${visible.map(
                           (s) => html`<tr title=${titleOf(s)}>
                             <td>${markOf(s)}</td>
                             <td>${clock(s.ts)}</td>
-                            <td><button @click=${() => { gotoSession(s.sessionId); }} title="Show only this session">${shortSession(s.sessionId)}</button></td>
-                            <td>${shortModel(s.model)}</td>
+                            <td class="tps-narrow-hide"><button @click=${() => { gotoSession(s.sessionId); }} title="Show only this session">${shortSession(s.sessionId)}</button></td>
+                            <td class="tps-model">${shortModel(s.model)}</td>
                             <td>${s.output}</td>
-                            <td>${(s.durationMs / 1000).toFixed(1)}</td>
+                            <td class="tps-narrow-hide">${(s.durationMs / 1000).toFixed(1)}</td>
                             <td>${s.streamed ? html`${s.approx ? "~" : ""}${fmtRate(s.tps)}` : html`–`}</td>
                             <td>${fmtMs(s.ttftMs)}</td>
-                            <td>${cacheHit(s)}</td>
+                            <td class="tps-narrow-hide">${cacheHit(s)}</td>
                           </tr>`,
                         )}
                       </tbody>
