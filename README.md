@@ -11,13 +11,30 @@ assistant message and agent turn; a PI WEB plugin renders it.
 | PI WEB `TPS` tab — Messages | Live tok/s while streaming, last-message stats, sparkline, filterable + paginated history (filter by model, session or `#turn`). TTFT, **decode tok/s (generation speed after the first token)**, cache-hit %, STALL / FAIL / replay marks. |
 | PI WEB `TPS` tab — Turns | One row per agent step: LLM slice (time, blended tok/s, **decode tok/s**, TTFT) vs tool slice, totals, outcome. Rows expand to the tool breakdown. |
 | PI WEB `TPS` tab — Tools | Every tool call, newest- or slowest-first, plus most-expensive-tools totals. |
-| PI WEB `TPS` tab — Fleet | Per-session rollup: messages, turns, done, avg t/s, tool time, estimated cost, **wasted turns + their cost**, context pressure. |
+| PI WEB `TPS` tab — Fleet | Per-session rollup: messages, turns, done, avg t/s, tool time, estimated cost (**`+` marks a floor**, see [Reading the numbers](#reading-the-numbers)), **wasted turns + their cost**, context pressure. |
 | Workspace label | Glanceable `⚡ 42 t/s` next to the workspace name. |
 | Chat `/tps` | `/tps [n]`, `/tps live`, `/tps totals`, `/tps models`, `/tps turns [n]`, `/tps tools [n]`, `/tps fleet`, `/tps cost`, `/tps budget [usd]` (session spend cap, default $5). Warns in chat at 80%/95% context pressure and at 80%/100% of session spend. `/tps cost` and Fleet report wasted spend (failed, aborted or empty turns, priced from turn rows). |
 
 Sessions, turns and tools link to each other inside the tab (filter/expand/jump).
 Opening a PI WEB session or chat position from the tab needs host support that
 PI WEB's plugin API does not expose yet — the rows are ready for it.
+
+## Reading the numbers
+
+- **Cost is an estimate, not an invoice.** It comes from the indicative list
+  price of each model (see `src/browser/models.ts`). A model we have no price for
+  contributes nothing to the number.
+- **A trailing `+` means the cost is a floor, not a total.** Some messages in that
+  session ran on a model with no list price, so the real spend is at least the
+  figure shown. Hover the cell for the unpriced share. A session that is *entirely*
+  unpriced shows `–` rather than a number, because `$0.00` would read as "free".
+- **The budget guardrail is a floor too**, for the same reason: it warns off the
+  priced part of your spend and tells you what share it left out.
+- **Dec vs blended t/s.** `Dec` is decode tok/s — generation speed measured from
+  the first token onward, so a slow provider is not scored as a slow decoder.
+  Without `Dec` the rate is blended and includes time-to-first-token.
+- **Wasted turns** are turns that failed, were aborted, or produced no output.
+  Their tokens were still billed, so they show a cost even though nothing shipped.
 
 ## Install
 
