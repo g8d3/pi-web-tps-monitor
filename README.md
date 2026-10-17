@@ -45,6 +45,11 @@ streaming (replays, buffered flushes — e.g. 313 tokens in 9ms) are recorded
 with `streamed: false`, show `–`/`↺` and are excluded from every average.
 Failed requests (`error`/`aborted`) are recorded with `✗` and also excluded.
 
+History and turn logs are capped by rows (500) and by size (`max_history_bytes`,
+default 2 MiB). The cap is enforced with an in-memory counter seeded from disk,
+so a normal append is a plain write — the file is re-read only when rotation is
+due, not on every message.
+
 The JSONL files are the machine-readable API: a supervisor agent can read them
 straight from the workspace to review another agent's work. Cross-workspace
 fleets are a supervisor-side file read: each workspace keeps its own

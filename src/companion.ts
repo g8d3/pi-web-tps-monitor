@@ -15,6 +15,9 @@ const STATUS_KEY = "tps-monitor";
 const CHARS_PER_TOKEN = 4;
 const LIVE_THROTTLE_MS = 500;
 const MAX_HISTORY = 500;
+// Byte ceiling as well as a row ceiling: one turn with a large tool list must not
+// make every later append expensive. Rotation reads the file once per rotation.
+const MAX_HISTORY_BYTES = 2 * 1024 * 1024;
 
 /** Mutable only so tests can shrink the stall window; leave at default in prod. */
 export const tuning = { stallThresholdMs: 3000 };
@@ -111,15 +114,62 @@ export function readTurns(cwd: string, limit: number): TpsTurn[] {
   }
 }
 
+// Per-file row/byte counts, seeded from disk once per process and updated on every
+// append, so the file is re-read only when rotation is actually due.
+const logState = new Map<string, { lines: number; bytes: number; seeded: boolean }>();
+
+/** Keep the newest lines that fit both ceilings (at least one). */
+export function trimLog(lines: string[], cap: number, byteCap: number): string[] {
+  const kept: string[] = [];
+  let bytes = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const size = Buffer.byteLength(lines[i]) + 1;
+    if (kept.length > 0 && (kept.length >= cap || bytes + size > byteCap)) break;
+    kept.push(lines[i]);
+    bytes += size;
+  }
+  return kept.reverse();
+}
+
+function stateOf(path: string): { lines: number; bytes: number; seeded: boolean } {
+  let st = logState.get(path);
+  if (!st) {
+    st = { lines: 0, bytes: 0, seeded: false };
+    logState.set(path, st);
+  }
+  if (!st.seeded) {
+    try {
+      const text = readFileSync(path, "utf8");
+      st.lines = text.split("\n").filter(Boolean).length;
+      st.bytes = Buffer.byteLength(text);
+    } catch {
+      // no file yet
+    }
+    st.seeded = true;
+  }
+  return st;
+}
+
+/** Append one JSONL row, rotating only when the row or byte ceiling is crossed. */
+export function appendLine(path: string, row: unknown): void {
+  const line = JSON.stringify(row) + "\n";
+  appendFileSync(path, line);
+  const st = stateOf(path);
+  st.lines += 1;
+  st.bytes += Buffer.byteLength(line);
+  if (st.lines > MAX_HISTORY || st.bytes > MAX_HISTORY_BYTES) {
+    const kept = trimLog(readFileSync(path, "utf8").split("\n").filter(Boolean), MAX_HISTORY, MAX_HISTORY_BYTES);
+    const body = kept.join("\n") + "\n";
+    writeFileSync(path, body);
+    st.lines = kept.length;
+    st.bytes = Buffer.byteLength(body);
+  }
+}
+
 function appendTurn(cwd: string, turn: TpsTurn): void {
   try {
     ensureDir(cwd);
-    const path = join(cwd, TURNS_FILE);
-    appendFileSync(path, JSON.stringify(turn) + "\n");
-    const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
-    if (lines.length > MAX_HISTORY) {
-      writeFileSync(path, lines.slice(-MAX_HISTORY).join("\n") + "\n");
-    }
+    appendLine(join(cwd, TURNS_FILE), turn);
   } catch {
     // ignore: turn history is best-effort
   }
@@ -145,12 +195,7 @@ function writeLive(cwd: string, live: TpsLive): void {
 function appendSample(cwd: string, sample: TpsSample): void {
   try {
     ensureDir(cwd);
-    const path = join(cwd, HISTORY_FILE);
-    appendFileSync(path, JSON.stringify(sample) + "\n");
-    const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
-    if (lines.length > MAX_HISTORY) {
-      writeFileSync(path, lines.slice(-MAX_HISTORY).join("\n") + "\n");
-    }
+    appendLine(join(cwd, HISTORY_FILE), sample);
   } catch {
     // ignore: history is best-effort
   }
