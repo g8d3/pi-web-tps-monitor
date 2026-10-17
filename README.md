@@ -65,19 +65,30 @@ about it, that is the retainer.
 ## Install
 
 > The package is **not on npm yet** — `npm:pi-web-tps-monitor` is the intended
-> name for when it is published. Until then install from the local checkout or
-> straight from git, both of which work today.
+> name for when it is published (a published install would ship `dist/`
+> prebuilt). Until then, install from a local checkout.
 
-From a local checkout (how this machine runs it; `package_path` in `needs.json`):
-add it as a Pi package in **Settings → Pi packages**, then **Settings → PI WEB
-plugins → enable TPS Monitor**. From git instead, use the repo URL in place of
-the local path.
+The plugin loads built artifacts (`dist/companion.js`, `dist/browser/`,
+`dist/server.js`), and `dist/` is not committed, so a checkout must be built
+first:
+
+```bash
+git clone <repo> && cd pi-web-tps-monitor
+npm install && npm run build
+```
+
+Then add that directory as a Pi package in **Settings → Pi packages**, and
+enable **TPS Monitor** in **Settings → PI WEB plugins**.
 
 Then restart the session daemon when safe (`systemctl --user restart
 pi-web-sessiond`) and reload the browser. New sessions pick up the companion
 automatically; `/reload` an idle session to add it to a live one.
 
 Terminal only: `pi --extension ./dist/companion.js`, then `/tps`.
+
+`needs.json` is local machine configuration (host, port, file names) and is
+intentionally not part of the public mirror. The plugin does not read it: it
+defines its own constants, e.g. `DEFAULT_BUDGET_USD` in `src/companion.ts`.
 
 See [CHANGELOG.md](CHANGELOG.md) for what each release changed.
 
