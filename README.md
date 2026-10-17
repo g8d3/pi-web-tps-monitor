@@ -11,8 +11,9 @@ assistant message and agent turn; a PI WEB plugin renders it.
 | PI WEB `TPS` tab — Messages | Live tok/s while streaming, last-message stats, sparkline, filterable + paginated history (filter by model, session or `#turn`). TTFT, cache-hit %, STALL / FAIL / replay marks. |
 | PI WEB `TPS` tab — Turns | One row per agent step: LLM slice (time, tok/s, TTFT) vs tool slice, totals, outcome. Rows expand to the tool breakdown. |
 | PI WEB `TPS` tab — Tools | Every tool call, newest- or slowest-first, plus most-expensive-tools totals. |
+| PI WEB `TPS` tab — Fleet | Per-session rollup: messages, turns, done, avg t/s, tool time, estimated cost, context pressure. |
 | Workspace label | Glanceable `⚡ 42 t/s` next to the workspace name. |
-| Chat `/tps` | `/tps [n]`, `/tps live`, `/tps totals`, `/tps models`, `/tps turns [n]`, `/tps tools [n]`. |
+| Chat `/tps` | `/tps [n]`, `/tps live`, `/tps totals`, `/tps models`, `/tps turns [n]`, `/tps tools [n]`, `/tps fleet`, `/tps cost`. Warns in chat at 80%/95% context pressure. |
 
 Sessions, turns and tools link to each other inside the tab (filter/expand/jump).
 Opening a PI WEB session or chat position from the tab needs host support that
@@ -36,6 +37,7 @@ Terminal only: `pi --extension ./dist/companion.js`, then `/tps`.
 - `src/server.ts` — server peer serving `live`, `history` and `turns` reads.
 - `src/browser/index.ts` — workspace panel + label.
 - `src/browser/protocol.ts` — shared shapes with back-compatible normalization.
+- `src/models.ts` — context limits + indicative prices for known model families; unknown models show `–` instead of invented numbers.
 
 Live rates during streaming are estimated from streamed chars (`chars/4`);
 final rates use provider `usage.output / duration`. Rows with no observed
@@ -44,7 +46,15 @@ with `streamed: false`, show `–`/`↺` and are excluded from every average.
 Failed requests (`error`/`aborted`) are recorded with `✗` and also excluded.
 
 The JSONL files are the machine-readable API: a supervisor agent can read them
-straight from the workspace to review another agent's work.
+straight from the workspace to review another agent's work. Cross-workspace
+fleets are a supervisor-side file read: each workspace keeps its own
+`.pi-web/tps-*.jsonl`, so a watchdog with filesystem access can aggregate
+`sessions × workspaces` with the same `fleetStats` math for provider-headroom
+and cost-per-outcome decisions.
+
+Context pressure (`input + cacheRead` vs the model's window) is estimated,
+not measured against the live context: treat the 80%/95% bands as an early
+warning, not a precise gauge.
 
 ## Develop
 

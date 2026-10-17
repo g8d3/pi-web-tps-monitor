@@ -6,6 +6,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
+import { contextPressure, fleetStats, fmtCost, fmtLimit, modelInfo, sampleCostUsd } from "./models.js";
 
 const HISTORY_FILE = ".pi-web/tps-history.jsonl";
 const TURNS_FILE = ".pi-web/tps-turns.jsonl";
@@ -194,6 +195,35 @@ export function flattenTools(turns: TpsTurn[]): FlatTool[] {
   return out.sort((a, b) => b.durationMs - a.durationMs);
 }
 
+function renderFleet(history: TpsSample[], turns: TpsTurn[]): string {
+  const stats = fleetStats(history, turns);
+  if (!stats.length) return "No sessions yet in this workspace.";
+  const rows = stats.map((f) => {
+    const ctx = f.pressure === undefined ? "   –" : `${String(Math.round(f.pressure * 100)).padStart(3)}%${f.pressure >= 0.8 ? "!" : " "}`;
+    const cost = f.unknownCost >= f.msgs ? "       –" : fmtCost(f.cost).padStart(8);
+    return `${shortSession(f.sessionId).padEnd(8)}  msgs ${String(f.msgs).padStart(3)}  turns ${String(f.turns).padStart(3)} (${String(f.done).padStart(3)} done)  ${fmtRate(f.avgTps).padStart(5)} t/s  tools ${(f.toolMs / 1000).toFixed(0).padStart(5)}s  ${cost}  ctx ${ctx}`;
+  });
+  return "```\n" + rows.join("\n") + "\n```";
+}
+
+function renderCost(history: TpsSample[], turns: TpsTurn[]): string {
+  if (!history.length) return "No samples yet.";
+  const rated = history.filter((s) => s.streamed && s.status === "ok");
+  const input = history.reduce((a, s) => a + s.input, 0);
+  const output = history.reduce((a, s) => a + s.output, 0);
+  const cached = history.reduce((a, s) => a + s.cacheRead, 0);
+  let cost = 0;
+  let priced = 0;
+  for (const s of history) {
+    const c = sampleCostUsd(s.model, s.input, s.output, s.cacheRead);
+    if (c === undefined) continue;
+    cost += c;
+    priced += 1;
+  }
+  const done = turns.filter((t) => t.outcome === "completed").length;
+  const per = done > 0 && cost > 0 ? `  ≈ ${fmtCost(cost / done)}/completed turn` : "";
+  return `⚡ ${history.length} messages (${rated.length} rated), in ${input} / out ${output} / cached ${cached} tokens\nest ${fmtCost(cost)} across ${priced} priced messages (${history.length - priced} unpriced)${per}\n${turns.length} turns, ${done} completed`;}
+
 function renderTools(turns: TpsTurn[], limit: number): string {
   const calls = flattenTools(turns);
   if (!calls.length) return "No tool calls logged yet.";
@@ -264,17 +294,20 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
   let active: ActiveMessage | undefined;
   let turn: ActiveTurn | undefined;
   let lastLlm: LastLlm | undefined;
+  const pressureBand = new Map<string, number>();
 
   pi.on("session_start", () => {
     active = undefined;
     turn = undefined;
     lastLlm = undefined;
+    pressureBand.clear();
   });
 
   pi.on("session_shutdown", () => {
     active = undefined;
     turn = undefined;
     lastLlm = undefined;
+    pressureBand.clear();
   });
 
   pi.on("message_start", (event, ctx) => {
@@ -375,6 +408,19 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       sessionId: sessionIdOf(ctx),
     };
     appendSample(ctx.cwd, sample);
+    const pressure = contextPressure(sample.model, sample.input, sample.cacheRead);
+    if (pressure !== undefined) {
+      const band = pressure >= 0.95 ? 0.95 : pressure >= 0.8 ? 0.8 : 0;
+      const prev = pressureBand.get(sample.sessionId) ?? 0;
+      if (band > prev) {
+        const limit = modelInfo(sample.model)?.contextLimit ?? 0;
+        ctx.ui.notify(
+          `⚠ Context at ${Math.round(pressure * 100)}% of the ~${fmtLimit(limit)} window (${shortModel(sample.model)}) — compact or hand off soon.`,
+          "warning",
+        );
+      }
+      pressureBand.set(sample.sessionId, band);
+    }
     writeLive(ctx.cwd, {
       state: "idle",
       model: sample.model,
@@ -449,7 +495,15 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
         ctx.ui.notify(renderTools(readTurns(ctx.cwd, MAX_HISTORY), n), "info");
         return;
       }
-      if (sub === "turns") {
+      if (sub === "fleet") {
+      ctx.ui.notify(renderFleet(readHistory(ctx.cwd, MAX_HISTORY), readTurns(ctx.cwd, MAX_HISTORY)), "info");
+      return;
+    }
+    if (sub === "cost") {
+      ctx.ui.notify(renderCost(readHistory(ctx.cwd, MAX_HISTORY), readTurns(ctx.cwd, MAX_HISTORY)), "info");
+      return;
+    }
+    if (sub === "turns") {
         const n = Math.min(100, Math.max(1, parseInt(rawN ?? "10", 10) || 10));
         ctx.ui.notify(renderTurns(readTurns(ctx.cwd, n)), "info");
         return;

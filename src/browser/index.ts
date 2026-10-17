@@ -9,6 +9,7 @@ import type {
   WorkspacePanelHost,
 } from "@jmfederico/pi-web/plugin-api";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsTurn } from "./protocol.js";
+import { contextPressure, fleetStats, fmtCost } from "../models.js";
 
 const POLL_MS = 2000;
 const FETCH_STALE_MS = 1500;
@@ -22,7 +23,7 @@ interface PanelState {
   live: TpsLive | undefined;
   history: TpsSample[];
   turns: TpsTurn[];
-  view: "messages" | "turns" | "tools";
+  view: "messages" | "turns" | "tools" | "fleet";
   toolSort: "slow" | "recent";
   status: string;
   fetching: boolean;
@@ -91,6 +92,12 @@ function shortModel(id: string): string {
 function clock(ts: string): string {
   const d = new Date(ts);
   return Number.isNaN(d.getTime()) ? "--:--:--" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+function ctxCell(s: TpsSample): string {
+  const p = contextPressure(s.model, s.input, s.cacheRead);
+  if (p === undefined) return "–";
+  return `${Math.round(p * 100)}%${p >= 0.8 ? " ⚠" : ""}`;
 }
 
 function shortSession(id: string): string {
@@ -239,7 +246,8 @@ const plugin: PiWebPlugin = {
                 state.page = 0;
                 context.host.requestRender();
               };
-              const listedMsgs = isTurns || isTools
+              const isFleet = state.view === "fleet";
+              const listedMsgs = isTurns || isTools || isFleet
                 ? []
                 : state.history.filter(
                     (s) => !q || s.model.toLowerCase().includes(q) || s.sessionId.toLowerCase().startsWith(q),
@@ -255,15 +263,17 @@ const plugin: PiWebPlugin = {
                   )
                 : [];
               const allToolRows = isTools ? toolRows(state.turns, state.toolSort) : [];
+              const fleet = isFleet ? fleetStats(state.history, state.turns).filter((f) => !q || f.sessionId.toLowerCase().startsWith(q)) : [];
               const listedTools = allToolRows.filter(
                 (r) => !q || r.name.toLowerCase().includes(q) || r.sessionId.toLowerCase().startsWith(q),
               );
-              const listedCount = isTurns ? listedTurns.length : isTools ? listedTools.length : listedMsgs.length;
+              const listedCount = isTurns ? listedTurns.length : isTools ? listedTools.length : isFleet ? fleet.length : listedMsgs.length;
               const pages = Math.max(1, Math.ceil(listedCount / PAGE_SIZE));
               const page = Math.min(state.page, pages - 1);
               const visible = listedMsgs.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
               const visibleT = listedTurns.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
               const visibleTools = listedTools.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+              const visibleF = fleet.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
               const statsTools = toolStats(listedTools);
 
               return html`<section><style>
@@ -310,6 +320,7 @@ const plugin: PiWebPlugin = {
                       <button ?disabled=${state.view === "messages"} @click=${() => { state.view = "messages"; state.page = 0; context.host.requestRender(); }}>Messages</button>
                       <button ?disabled=${state.view === "turns"} @click=${() => { state.view = "turns"; state.page = 0; context.host.requestRender(); }}>Turns</button>
                       <button ?disabled=${state.view === "tools"} @click=${() => { state.view = "tools"; state.page = 0; context.host.requestRender(); }}>Tools</button>
+                      <button ?disabled=${state.view === "fleet"} @click=${() => { state.view = "fleet"; state.page = 0; context.host.requestRender(); }}>Fleet</button>
                     </p>
                     <label>Filter <input
                       type="search"
@@ -395,8 +406,26 @@ const plugin: PiWebPlugin = {
                             )}
                           </tbody>
                         </table></div>`
+                      : isFleet
+                      ? html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
+                      <thead><tr><th>Sess</th><th>Msgs</th><th>Turns</th><th>Done</th><th>t/s</th><th>Tools</th><th>Cost</th><th>Ctx</th></tr></thead>
+                      <tbody>
+                        ${visibleF.map(
+                          (f) => html`<tr>
+                            <td><button @click=${() => { gotoSession(f.sessionId); }} title="Show only this session">${shortSession(f.sessionId)}</button></td>
+                            <td>${f.msgs}</td>
+                            <td>${f.turns}</td>
+                            <td>${f.done}</td>
+                            <td>${fmtRate(f.avgTps)}</td>
+                            <td>${(f.toolMs / 1000).toFixed(0)}s</td>
+                            <td>${f.unknownCost >= f.msgs ? "–" : fmtCost(f.cost)}</td>
+                            <td>${f.pressure === undefined ? "–" : `${Math.round(f.pressure * 100)}%${f.pressure >= 0.8 ? " ⚠" : ""}`}</td>
+                          </tr>`,
+                        )}
+                      </tbody>
+                    </table></div>`
                       : html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                      <thead><tr><th></th><th>Time</th><th class="tps-narrow-hide">Sess</th><th>Model</th><th>Out</th><th class="tps-narrow-hide">Secs</th><th>t/s</th><th>TTFT</th><th class="tps-narrow-hide">Hit</th></tr></thead>
+                      <thead><tr><th></th><th>Time</th><th class="tps-narrow-hide">Sess</th><th>Model</th><th>Out</th><th class="tps-narrow-hide">Secs</th><th>t/s</th><th>TTFT</th><th class="tps-narrow-hide">Hit</th><th class="tps-narrow-hide">Ctx</th></tr></thead>
                       <tbody>
                         ${visible.map(
                           (s) => html`<tr title=${titleOf(s)}>
@@ -409,6 +438,7 @@ const plugin: PiWebPlugin = {
                             <td>${s.streamed ? html`${s.approx ? "~" : ""}${fmtRate(s.tps)}` : html`–`}</td>
                             <td>${fmtMs(s.ttftMs)}</td>
                             <td class="tps-narrow-hide">${cacheHit(s)}</td>
+                            <td class="tps-narrow-hide">${ctxCell(s)}</td>
                           </tr>`,
                         )}
                       </tbody>
@@ -437,7 +467,7 @@ const plugin: PiWebPlugin = {
                       </tbody>
                     </table>`
                   : ""}
-                <p><small>Tip: <code>/tps 10</code> messages, <code>/tps turns</code> steps, <code>/tps tools</code> slowest calls. Rows: ✗ failed, ↺ replayed (excluded), ⚠ stalled.</small></p>
+                <p><small>Tip: <code>/tps 10</code> messages, <code>/tps turns</code> steps, <code>/tps tools</code> slowest calls, <code>/tps fleet</code> sessions, <code>/tps cost</code> spend. Rows: ✗ failed, ↺ replayed (excluded), ⚠ stalled.</small></p>
               </section>`;
             },
           },
