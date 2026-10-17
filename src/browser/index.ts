@@ -489,6 +489,12 @@ const plugin: PiWebPlugin = {
                     </table>`
                   : ""}
                 <p><small>Tip: <code>/tps 10</code> messages, <code>/tps turns</code> steps, <code>/tps tools</code> slowest calls, <code>/tps fleet</code> sessions, <code>/tps cost</code> spend. Rows: ✗ failed, ↺ replayed (excluded), ⚠ stalled.</small></p>
+                ${isFleet
+                  ? html`<p><small>Free self-serve preview of the file this view reads
+                      (<code>.pi-web/tps-turns.jsonl</code>, parsed in your browser, nothing uploaded):
+                      <a href="https://focalis.cc/audit/preview/" target="_blank" rel="noopener">focalis.cc/audit/preview</a>.
+                      The audit adds what a turn row cannot contain — the process boot before the first event.</small></p>`
+                  : ""}
               </section>`;
             },
           },

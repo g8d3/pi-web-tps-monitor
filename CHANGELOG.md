@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.10.5 — the Fleet view points at the free preview
+
+The Fleet view reads `.pi-web/tps-turns.jsonl`; the same file is the input to the free
+self-serve preview at <https://focalis.cc/audit/preview/> (parsed in the browser, nothing
+uploaded). One line under the tip text, Fleet view only, so the number in the panel and the
+offer that follows from it are one click apart. `test/fleet-link.test.mjs` pins the shape:
+one occurrence, inside the `isFleet` branch, `target="_blank"` + `rel="noopener"`.
+
+
 All notable changes to TPS Monitor. Versions follow the tags on `main`.
 
 Measured numbers below come from our own runs and are cited with their source;
