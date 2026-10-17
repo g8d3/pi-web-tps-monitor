@@ -5,6 +5,37 @@ All notable changes to TPS Monitor. Versions follow the tags on `main`.
 Measured numbers below come from our own runs and are cited with their source;
 where a number is an assumption rather than a measurement, it says so.
 
+## v0.10.4 — 2026-10-17
+
+**The "unexplained" remainder no longer swallows the provider wait.**
+`preResponseMs` (v0.10.2) measures the turn-start → first-token window, which
+external measurement showed is the bulk of what `unaccountedMs` used to report
+as unknown. `unaccountedMs()` now excludes that window when a turn row carries
+it, so the ⚠ flag means *still* unexplained after LLM + tools + provider wait,
+not "provider waited". Pre-v23 rows carry no `preResponseMs`, so their numbers
+are unchanged. Tooltip wording updated to say what remains.
+
+From the N3 startup-measurement subsession (5 reps, one-word reply): the
+1.5–2.2 s "unaccounted" was the provider roundtrip, which pi attributes to
+neither the model nor the harness — `message_start` fires only once the
+response body is in hand, so `llmDurationMs` records stream duration (2 ms),
+never time-to-first-byte. Process startup (~0.98 s) is real but sits *before*
+the turn clock entirely.
+
+## v0.10.3 — 2026-10-17
+
+**A rate floor for very short replies, plus packaging honesty.** Replies whose
+stream window collapsed below 50 ms (`tuning.minStreamMs`) were recorded as
+unrated rather than as a fabricated rate — a 3-token reply had been reported as
+1000 t/s because `message_start` can fire at the first streamed chunk,
+collapsing the window to ~0 ms. Tokens are still recorded; only the rate is
+withheld, and those rows are excluded from averages.
+
+Same release: this repository gained a `CHANGELOG.md`, the version field was
+bumped to match its tag (three earlier tags shipped without it), and the
+install docs now describe building from a checkout instead of an npm package
+that does not exist.
+
 ## v0.10.2 — 2026-10-17
 
 **The provider roundtrip is now a column, not a mystery.** Adds `preResponseMs`

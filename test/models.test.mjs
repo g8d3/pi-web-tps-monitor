@@ -115,6 +115,19 @@ test("unaccounted gap flags big unexplained remainders only", async () => {
   assert.equal(hasUnaccountedGap({ turnMsTotal: 1500, llmDurationMs: 200, toolMsTotal: 0 }), false);
 });
 
+test("the measured pre-token window is not double-counted as unaccounted", async () => {
+  const { unaccountedMs, hasUnaccountedGap } = await import("../dist/browser/models.js");
+  // The N3 shape: a PONG turn where the provider wait (preResponseMs) IS the gap.
+  const pongTurn = { turnMsTotal: 2414, llmDurationMs: 2, toolMsTotal: 0, preResponseMs: 2410 };
+  assert.equal(unaccountedMs(pongTurn), 2, "remainder after the measured windows");
+  assert.equal(hasUnaccountedGap(pongTurn), false, "provider wait is measured, not unexplained");
+  // Pre-v23 rows have no preResponseMs: identical to the old behavior.
+  assert.equal(unaccountedMs({ turnMsTotal: 2414, llmDurationMs: 2, toolMsTotal: 0 }), 2412);
+  assert.equal(hasUnaccountedGap({ turnMsTotal: 2414, llmDurationMs: 2, toolMsTotal: 0 }), true);
+  // A genuinely unexplained remainder still flags even with a pre-token window.
+  assert.equal(hasUnaccountedGap({ turnMsTotal: 9903, llmDurationMs: 2063, toolMsTotal: 0, preResponseMs: 1500 }), true);
+});
+
 test("normalizeTurn backfills legacy rows without the new fields", async () => {
   const { normalizeTurn } = await import("../dist/browser/protocol.js");
   const legacy = {

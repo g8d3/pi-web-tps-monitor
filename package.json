@@ -1,15 +1,21 @@
 {
   "name": "pi-web-tps-monitor",
   "description": "Live tokens/sec, TTFT, per-turn step timing and per-tool costs for Pi + PI WEB",
-  "version": "0.10.3",
+  "version": "0.10.4",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/g8d3/pi-web-tps-monitor.git"
   },
   "type": "module",
-  "keywords": ["pi-package"],
-  "files": ["dist", "src", "test"],
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "dist",
+    "src",
+    "test"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.mjs"
@@ -24,7 +30,9 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "pi": {
-    "extensions": ["./dist/companion.js"]
+    "extensions": [
+      "./dist/companion.js"
+    ]
   },
   "piWeb": {
     "plugins": [

@@ -372,7 +372,7 @@ const plugin: PiWebPlugin = {
                                 <td class="tps-narrow-hide">${fmtMs(t.ttftMs)}</td>
                                 <td>${t.tools.length ? t.tools.slice(0, 3).map((c) => c.name).join(", ") : "–"}</td>
                                 <td class="tps-narrow-hide">${(t.toolMsTotal / 1000).toFixed(1)}s</td>
-                                <td title=${hasUnaccountedGap(t) ? `+${(unaccountedMs(t) / 1000).toFixed(1)}s unaccounted: requested tools never completed, or time outside measured messages and tools` : "Step wall-clock"}>${(t.turnMsTotal / 1000).toFixed(1)}s${hasUnaccountedGap(t) ? " ⚠" : ""}</td>
+                                <td title=${hasUnaccountedGap(t) ? `+${(unaccountedMs(t) / 1000).toFixed(1)}s still unexplained after LLM, tools and the measured pre-token window (provider wait is now measured separately as Pre)` : "Step wall-clock"}>${(t.turnMsTotal / 1000).toFixed(1)}s${hasUnaccountedGap(t) ? " ⚠" : ""}</td>
                               </tr>`;
                               if (!open) return [row];
                               const detail = html`<tr><td></td><td colspan="12">${t.llmMessages > 1 ? html`<div>${t.llmMessages} messages, ${(t.llmDurationMs / 1000).toFixed(1)}s total</div>` : ""}${t.requestedTools > t.tools.length ? html`<div>⚠ ${t.requestedTools} requested, ${t.tools.length} completed</div>` : ""}${t.tools.length

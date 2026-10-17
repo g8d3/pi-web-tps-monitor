@@ -95,16 +95,20 @@ export function fmtLimit(tokens: number): string {
   return `${tokens}`;
 }
 
-/** Wall-clock in a turn that is neither measured LLM nor measured tools. */
+/** Wall-clock in a turn that is neither measured LLM, measured tools, nor the
+ * measured pre-token window (v23+ preResponseMs: turn_start -> first message_start,
+ * which is the provider roundtrip pi never attributes to llmDurationMs — N3
+ * subsession showed this window IS the bulk of what older rows called
+ * "unaccounted"). On pre-v23 rows the window is absent, so behavior is unchanged. */
 export const UNACCOUNTED_MIN_MS = 2000;
 export const UNACCOUNTED_MIN_FRAC = 0.3;
 
-export function unaccountedMs(turn: { turnMsTotal: number; llmDurationMs: number; toolMsTotal: number }): number {
-  return Math.max(0, turn.turnMsTotal - turn.llmDurationMs - turn.toolMsTotal);
+export function unaccountedMs(turn: { turnMsTotal: number; llmDurationMs: number; toolMsTotal: number; preResponseMs?: number }): number {
+  return Math.max(0, turn.turnMsTotal - turn.llmDurationMs - turn.toolMsTotal - (turn.preResponseMs ?? 0));
 }
 
 /** True when the gap is big enough in both absolute and relative terms to flag. */
-export function hasUnaccountedGap(turn: { turnMsTotal: number; llmDurationMs: number; toolMsTotal: number }): boolean {
+export function hasUnaccountedGap(turn: { turnMsTotal: number; llmDurationMs: number; toolMsTotal: number; preResponseMs?: number }): boolean {
   const u = unaccountedMs(turn);
   return u > UNACCOUNTED_MIN_MS && u > turn.turnMsTotal * UNACCOUNTED_MIN_FRAC;
 }
