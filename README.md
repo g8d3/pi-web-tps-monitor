@@ -19,6 +19,32 @@ Sessions, turns and tools link to each other inside the tab (filter/expand/jump)
 Opening a PI WEB session or chat position from the tab needs host support that
 PI WEB's plugin API does not expose yet — the rows are ready for it.
 
+## Fleet monitoring and the retainer
+
+This repo is the **instrument**. It measures continuously and writes machine-
+readable rows to your workspace — `.pi-web/tps-history.jsonl` (per message),
+`.pi-web/tps-turns.jsonl` (per turn) and `.pi-web/tps-live.json` (the live
+stream) — and the Fleet tab rolls those up per session. A supervisor can read
+those files directly to review another agent's work; no agent access is needed.
+
+The **retainer ("Fleet Tax Monitoring") is a human service sold alongside this
+tool**, not a feature of it. Knowing which rows matter, and what counts as a
+regression, is judgement — so the tool measures and the service watches:
+
+| Retainer deliverable | Backed by this tool | Human service |
+|---|---|---|
+| Wall floor per loop | yes — turn rows carry `turnMsTotal` + tool/LLM split | sets the baseline, decides the floor |
+| Cache-hit rate | yes — per message, plus the STALL/FAIL marks | trend it, judge a bad month |
+| Share of turns that failed / produced nothing | yes — the Waste column and `/tps cost` | define the threshold, explain the cause |
+| Spend by session | yes — Fleet cost, `/tps budget`, the `+` floor marker | reconcile against your invoice |
+| Context pressure vs each window | yes — Fleet Ctx column, 80/95% chat warnings | pick the compaction policy |
+| **Alert on a >20% regression vs baseline** | **no** — nothing here stores a baseline or alerts across time | **yes — this is the service** |
+| Quarterly re-measurement + regression script | no — the monitor is not a benchmark harness | yes — the service |
+
+Read it that way: if you want the numbers, this tool gives them to you for free
+and forever. If you want someone to tell you when they get worse, and what to do
+about it, that is the retainer.
+
 ## Reading the numbers
 
 - **Cost is an estimate, not an invoice.** It comes from the indicative list
