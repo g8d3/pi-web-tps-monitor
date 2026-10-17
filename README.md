@@ -58,6 +58,13 @@ That paper also retracts three mechanisms we used to sell (cache discipline,
 startup-scan scoping, a size coefficient) because they failed to reproduce in our
 own data. We mention it here because it is the same standard this README is held to.
 
+**The file this plugin writes is the input to a free self-serve preview**: drop your
+`<workspace>/.pi-web/tps-turns.jsonl` into <https://focalis.cc/audit/preview/> and it
+decomposes the turns in your browser (pre-response, stream, tools, residual, tail,
+wasted turns) and uploads nothing. If you want the part the file cannot see — the process
+boot before the first event, and a before/after series on your own loops — that is the
+audit: what to send is at <https://focalis.cc/audit/intake/>.
+
 Contact: **hola@focalis.cc**.
 
 ## Reading the numbers
