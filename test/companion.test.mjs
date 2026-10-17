@@ -6,6 +6,12 @@ import { test } from "node:test";
 
 import tpsMonitor, { tuning } from "../dist/companion.js";
 
+// The fabricated-rate floor (v19) is about wall-clock windows, but these
+// lifecycle fixtures emit their deltas instantly, so the measured window is
+// ~0 ms. Tests that assert a rate run with the floor disabled; the dedicated
+// floor test below sets it explicitly.
+tuning.minStreamMs = 0;
+
 function makeHarness(cwd) {
   const handlers = {};
   const commands = {};

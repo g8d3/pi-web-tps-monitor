@@ -20,7 +20,7 @@ const MAX_HISTORY = 500;
 const MAX_HISTORY_BYTES = 2 * 1024 * 1024;
 
 /** Mutable only so tests can shrink the stall window; leave at default in prod. */
-export const tuning = { stallThresholdMs: 3000 };
+export const tuning = { stallThresholdMs: 3000, minStreamMs: 50 };
 
 /** Session spend cap in USD. Default mirrors needs.json `default_budget_usd`. */
 export const DEFAULT_BUDGET_USD = 5;
@@ -471,8 +471,14 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       ctx.ui.setStatus(STATUS_KEY, undefined);
       return;
     }
-    const streamed = finished.deltas > 0 && output > 0;
     const durationMs = Math.max(1, Date.now() - finished.startedAt);
+    // A rate needs a window that actually covers the provider call. Pi's
+    // message_start sometimes fires at the first streamed chunk instead of when
+    // the request is dispatched, which collapses the window to ~0 ms and turns a
+    // 3-token reply into a fabricated 1000 t/s. Below the floor the window is not
+    // a measurement, so the row is recorded as unrated (`–`, excluded from
+    // averages) rather than as a rate.
+    const streamed = finished.deltas > 0 && output > 0 && durationMs >= tuning.minStreamMs;
     const tps = streamed ? Math.round((output / (durationMs / 1000)) * 10) / 10 : 0;
     const sample: TpsSample = {
       ts: new Date().toISOString(),
