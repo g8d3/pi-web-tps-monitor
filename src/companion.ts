@@ -63,6 +63,9 @@ export function shortSession(id: string): string {
 interface ActiveTurn {
   index: number;
   startedAt: number;
+  /** turn_start -> first assistant message_start of this turn (provider roundtrip
+   * window). Set once; undefined when the turn produced no assistant message. */
+  preResponseMs?: number;
   tools: TpsToolCall[];
 }
 
@@ -329,6 +332,8 @@ function renderTools(turns: TpsTurn[], limit: number): string {
 
 function renderTurns(turns: TpsTurn[]): string {
   if (!turns.length) return "No turns yet. Turns are logged when each agent step finishes its tools.";
+  // 0 = pre-v23 row or a turn with no assistant message; both read as unknown.
+  const pre = (ms?: number) => (ms && ms > 0 ? fmtMs(ms) : "–");
   const rows = turns.map((t) => {
     const msgs = t.llmMessages > 1 ? ` (${t.llmMessages} msgs)` : "";
     const llm = t.streamed ? `${(t.llmDurationMs / 1000).toFixed(1)}s ${fmtRate(t.tps)}t/s ttft ${fmtMs(t.ttftMs)}${msgs}` : "– replay";
@@ -338,7 +343,7 @@ function renderTurns(turns: TpsTurn[]): string {
       : t.requestedTools > 0 ? `– (${t.requestedTools} requested, none ran)` : "–";
     const gap = hasUnaccountedGap(t) ? ` +${(unaccountedMs(t) / 1000).toFixed(1)}s?` : "";
     const mark = t.outcome !== "completed" ? ` ${t.outcome.toUpperCase()}` : "";
-    return `${t.ts.slice(11, 19)} #${t.turnIndex} ${shortSession(t.sessionId)} ${shortModel(t.model).padEnd(18)} | llm ${llm} | tools ${tools} | turn ${(t.turnMsTotal / 1000).toFixed(1)}s${gap}${mark}`;
+    return `${t.ts.slice(11, 19)} #${t.turnIndex} ${shortSession(t.sessionId)} ${shortModel(t.model).padEnd(18)} | pre ${pre(t.preResponseMs)} | llm ${llm} | tools ${tools} | turn ${(t.turnMsTotal / 1000).toFixed(1)}s${gap}${mark}`;
   });
   return "```\n" + rows.join("\n") + "\n```";
 }
@@ -416,6 +421,12 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
 
   pi.on("message_start", (event, ctx) => {
     if (event.message.role !== "assistant") return;
+    // First assistant message of the turn: this is where the provider roundtrip
+    // lands. Pi emits message_start *after* the provider responds, so the window
+    // turn_start -> here is the tax llmDurationMs cannot see (it times the stream).
+    if (turn && turn.preResponseMs === undefined) {
+      turn.preResponseMs = Math.max(0, Date.now() - turn.startedAt);
+    }
     active = {
       startedAt: Date.now(),
       chars: 0,
@@ -608,6 +619,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       model: acc.messages > 0 ? acc.model : (ctx.model?.id ?? "unknown"),
       turnIndex: turn?.index ?? event.turnIndex,
       llmDurationMs: acc.durationMs,
+      ...(turn?.preResponseMs !== undefined ? { preResponseMs: turn.preResponseMs } : {}),
       ttftMs: acc.ttftMs,
       input: acc.input,
       output: acc.output,

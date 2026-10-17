@@ -52,6 +52,12 @@ function decodeRate(n: number | undefined): string {
   return typeof n === "number" && n >= 0 ? fmtRate(n) : "–";
 }
 
+/** Pre-response window (turn_start -> first message_start). 0 means the row predates
+ * the field or the turn never produced an assistant message; both render as "–". */
+function preResp(ms: number | undefined): string {
+  return ms && ms > 0 ? fmtMs(ms) : "–";
+}
+
 function cacheHit(s: TpsSample): string {
   const total = s.input + s.cacheRead;
   if (s.cacheRead <= 0 || total <= 0) return "–";
@@ -344,7 +350,7 @@ const plugin: PiWebPlugin = {
                       }}></label>
                     ${isTurns
                       ? html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                          <thead><tr><th></th><th>Time</th><th>Turn</th><th class="tps-narrow-hide">Msgs</th><th class="tps-narrow-hide">Sess</th><th>LLM</th><th>t/s</th><th class="tps-narrow-hide">Dec</th><th class="tps-narrow-hide">TTFT</th><th>Tools</th><th class="tps-narrow-hide">Tool time</th><th>Total</th></tr></thead>
+                          <thead><tr><th></th><th>Time</th><th>Turn</th><th class="tps-narrow-hide">Msgs</th><th class="tps-narrow-hide">Sess</th><th>LLM</th><th class="tps-narrow-hide">Pre</th><th>t/s</th><th class="tps-narrow-hide">Dec</th><th class="tps-narrow-hide">TTFT</th><th>Tools</th><th class="tps-narrow-hide">Tool time</th><th>Total</th></tr></thead>
                           <tbody>
                             ${visibleT.flatMap((t) => {
                               const key = `${t.sessionId}#${t.turnIndex}`;
@@ -360,6 +366,7 @@ const plugin: PiWebPlugin = {
                                 <td class="tps-narrow-hide">${t.llmMessages}</td>
                                 <td class="tps-narrow-hide"><button @click=${() => { gotoSession(t.sessionId); }} title="Show only this session">${shortSession(t.sessionId)}</button></td>
                                 <td>${t.streamed ? html`${(t.llmDurationMs / 1000).toFixed(1)}s` : html`–`}</td>
+                                <td class="tps-narrow-hide" title="turn_start → first assistant message_start: the provider roundtrip window (the tax the stream clock cannot see)">${preResp(t.preResponseMs)}</td>
                                 <td>${t.streamed ? html`${fmtRate(t.tps)}` : html`–`}</td>
                                 <td class="tps-narrow-hide">${t.streamed ? decodeRate(t.decodeTps) : "–"}</td>
                                 <td class="tps-narrow-hide">${fmtMs(t.ttftMs)}</td>
@@ -368,7 +375,7 @@ const plugin: PiWebPlugin = {
                                 <td title=${hasUnaccountedGap(t) ? `+${(unaccountedMs(t) / 1000).toFixed(1)}s unaccounted: requested tools never completed, or time outside measured messages and tools` : "Step wall-clock"}>${(t.turnMsTotal / 1000).toFixed(1)}s${hasUnaccountedGap(t) ? " ⚠" : ""}</td>
                               </tr>`;
                               if (!open) return [row];
-                              const detail = html`<tr><td></td><td colspan="10">${t.llmMessages > 1 ? html`<div>${t.llmMessages} messages, ${(t.llmDurationMs / 1000).toFixed(1)}s total</div>` : ""}${t.requestedTools > t.tools.length ? html`<div>⚠ ${t.requestedTools} requested, ${t.tools.length} completed</div>` : ""}${t.tools.length
+                              const detail = html`<tr><td></td><td colspan="12">${t.llmMessages > 1 ? html`<div>${t.llmMessages} messages, ${(t.llmDurationMs / 1000).toFixed(1)}s total</div>` : ""}${t.requestedTools > t.tools.length ? html`<div>⚠ ${t.requestedTools} requested, ${t.tools.length} completed</div>` : ""}${t.tools.length
                                 ? t.tools.map((c) => html`<div>${c.name} — ${(c.durationMs / 1000).toFixed(1)}s${c.isError ? " ✗" : ""}</div>`)
                                 : html`<em>no tool calls this turn</em>`}</td></tr>`;
                               return [row, detail];

@@ -126,6 +126,31 @@ test("normalizeTurn backfills legacy rows without the new fields", async () => {
   const turn = normalizeTurn(legacy);
   assert.equal(turn.requestedTools, 1);
   assert.equal(turn.llmMessages, 1);
+  // pre-v23 rows predate the pre-response window: backfilled 0, which the UI shows as "–".
+  assert.equal(turn.preResponseMs, 0);
+});
+
+test("normalizeTurn keeps a recorded preResponseMs", async () => {
+  const { normalizeTurn } = await import("../dist/browser/protocol.js");
+  const row = {
+    ts: "2026-10-17T00:00:00.000Z", sessionId: "s", model: "m", turnIndex: 0,
+    llmDurationMs: 100, ttftMs: 10, input: 5, output: 6, tps: 60,
+    streamed: true, approx: false, tools: [], toolMsTotal: 0, turnMsTotal: 200,
+    outcome: "completed", toolErrors: 0, preResponseMs: 1451,
+  };
+  assert.equal(normalizeTurn(row).preResponseMs, 1451);
+});
+
+test("a turn's preResponseMs is rejected when it is not a number", async () => {
+  const { isTpsTurn } = await import("../dist/browser/protocol.js");
+  const base = {
+    ts: "2026-10-17T00:00:00.000Z", sessionId: "s", model: "m", turnIndex: 0,
+    llmDurationMs: 100, ttftMs: 10, input: 5, output: 6, tps: 60,
+    streamed: true, approx: false, tools: [], toolMsTotal: 0, turnMsTotal: 200,
+    outcome: "completed", toolErrors: 0,
+  };
+  assert.equal(isTpsTurn({ ...base, preResponseMs: 1451 }), true);
+  assert.equal(isTpsTurn({ ...base, preResponseMs: "soon" }), false);
 });
 
 test("a mixed session's cost renders as a floor, never as a complete total", () => {

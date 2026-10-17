@@ -54,6 +54,9 @@ export interface TpsTurn {
   tps: number;
   /** Decode rate: llmMessages output over the post-first-token window. */
   decodeTps?: number;
+  /** turn_start -> first assistant message_start of this turn (ms): the provider
+   * roundtrip window. Absent on pre-v23 rows. */
+  preResponseMs?: number;
   streamed: boolean;
   approx: boolean;
   tools: TpsToolCall[];
@@ -182,6 +185,7 @@ export function isTpsTurn(v: unknown): v is TpsTurn {
   if (typeof v.requestedTools !== "undefined" && typeof v.requestedTools !== "number") return false;
   if (typeof v.llmMessages !== "undefined" && typeof v.llmMessages !== "number") return false;
   if (typeof v.decodeTps !== "undefined" && typeof v.decodeTps !== "number") return false;
+  if (typeof v.preResponseMs !== "undefined" && typeof v.preResponseMs !== "number") return false;
   return true;
 }
 
@@ -194,7 +198,7 @@ function isTpsToolCall(v: unknown): v is TpsToolCall {
 /** Pre-v15 rows lack requestedTools/llmMessages; backfill neutral defaults. */
 export function normalizeTurn(v: unknown): TpsTurn | undefined {
   if (!isTpsTurn(v)) return undefined;
-  const raw = v as unknown as { requestedTools?: unknown; llmMessages?: unknown; decodeTps?: unknown };
+  const raw = v as unknown as { requestedTools?: unknown; llmMessages?: unknown; decodeTps?: unknown; preResponseMs?: unknown };
   const decodeTps =
     typeof raw.decodeTps === "number"
       ? raw.decodeTps
@@ -203,6 +207,8 @@ export function normalizeTurn(v: unknown): TpsTurn | undefined {
     ...v,
     requestedTools: typeof raw.requestedTools === "number" ? raw.requestedTools : v.tools.length,
     llmMessages: typeof raw.llmMessages === "number" ? raw.llmMessages : 1,
+    // Pre-v23 rows have no pre-response window; 0 renders as unknown ('–').
+    preResponseMs: typeof raw.preResponseMs === "number" ? raw.preResponseMs : 0,
     ...(decodeTps >= 0 ? { decodeTps } : {}),
   };
 }
