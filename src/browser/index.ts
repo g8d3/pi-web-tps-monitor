@@ -10,7 +10,7 @@ import type {
 } from "@jmfederico/pi-web/plugin-api";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsTurn } from "./protocol.js";
 
-import { contextPressure, fleetStats, fmtCost, hasUnaccountedGap, unaccountedMs } from "./models.js";
+import { contextPressure, fleetStats, fmtCost, fmtPartialCost, hasUnaccountedGap, unaccountedMs } from "./models.js";
 
 const POLL_MS = 2000;
 const FETCH_STALE_MS = 1500;
@@ -430,7 +430,7 @@ const plugin: PiWebPlugin = {
                             <td>${f.done}</td>
                             <td>${fmtRate(f.avgTps)}</td>
                             <td>${(f.toolMs / 1000).toFixed(0)}s</td>
-                            <td>${f.unknownCost >= f.msgs ? "–" : fmtCost(f.cost)}</td>
+                            <td title=${f.unpricedShare > 0 ? `${Math.round(f.unpricedShare * 100)}% of this session's messages have no list price, so this is a floor` : "Estimated spend from priced messages"}>${fmtPartialCost(f.cost, f.msgs - f.unknownCost, f.unknownCost)}</td>
                             <td title="Turns that failed, aborted or produced no output">${f.wastedTurns === 0 ? "–" : `${f.wastedTurns}${f.wastedCost > 0 ? ` ${fmtCost(f.wastedCost)}` : ""}`}</td>
                             <td>${f.pressure === undefined ? "–" : `${Math.round(f.pressure * 100)}%${f.pressure >= 0.8 ? " ⚠" : ""}`}</td>
                           </tr>`,

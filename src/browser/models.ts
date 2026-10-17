@@ -73,6 +73,22 @@ export function fmtCost(usd: number): string {
   return `$${usd.toFixed(usd < 0.1 ? 4 : 2)}`;
 }
 
+/** Render a spend figure, flagging it as a PARTIAL total when some of the messages
+ * behind it had no list price. A cost with unpriced messages in it is a floor, not
+ * the session's spend, so every surface must say `+` instead of implying completeness.
+ * All-or-nothing (everything unpriced) renders as unknown, never as a number. */
+export function fmtPartialCost(usd: number, priced: number, unpriced: number): string {
+  if (priced <= 0) return "–";
+  return unpriced > 0 ? `${fmtCost(usd)}+` : fmtCost(usd);
+}
+
+/** Share of messages with no list price, as a `NN% unpriced` tag; empty when fully priced. */
+export function unpricedTag(priced: number, unpriced: number): string {
+  const total = priced + unpriced;
+  if (unpriced <= 0 || total <= 0) return "";
+  return `${Math.round((unpriced / total) * 100)}% unpriced`;
+}
+
 export function fmtLimit(tokens: number): string {
   if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M`;
   if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
@@ -150,6 +166,10 @@ export interface SessionStat {
   /** Estimated USD from priced messages; unknowns counted separately. */
   cost: number;
   unknownCost: number;
+  /** Fraction of this session's messages with no list price (0..1). When > 0 the
+   * `cost` above is a PARTIAL total, and every surface must say so rather than
+   * presenting it as the session's whole spend. */
+  unpricedShare: number;
   pressure?: number;
 }
 
@@ -196,6 +216,7 @@ export function fleetStats(history: TpsSample[], turns: TpsTurn[]): SessionStat[
       toolMs: ts.reduce((a, t) => a + t.toolMsTotal, 0),
       cost,
       unknownCost,
+      unpricedShare: samples.length > 0 ? unknownCost / samples.length : 0,
       pressure: newest ? contextPressure(newest.model, newest.input, newest.cacheRead) : undefined,
     });
   }

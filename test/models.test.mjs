@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import { contextPressure, fleetStats, fmtCost, modelInfo, sampleCostUsd } from "../dist/browser/models.js";
+import { contextPressure, fleetStats, fmtCost, fmtPartialCost, modelInfo, sampleCostUsd } from "../dist/browser/models.js";
 
 test("modelInfo matches specific families, unknown ids yield undefined", () => {
   const sonnet = modelInfo("anthropic/claude-sonnet-4-5");
@@ -126,4 +126,33 @@ test("normalizeTurn backfills legacy rows without the new fields", async () => {
   const turn = normalizeTurn(legacy);
   assert.equal(turn.requestedTools, 1);
   assert.equal(turn.llmMessages, 1);
+});
+
+test("a mixed session's cost renders as a floor, never as a complete total", () => {
+  // sonnet-4 is priced; "mystery-model-x" matches nothing => no list price.
+  const s = (over) => ({
+    ts: "2026-10-17T00:00:00.000Z", model: "x/sonnet-4", input: 1000, output: 200,
+    durationMs: 1000, tps: 200, approx: false, streamed: true, status: "ok",
+    stopReason: "stop", sessionId: "mix", cacheRead: 0,
+    ...over,
+  });
+  const history = [
+    s({ ts: "2026-10-17T00:02:00.000Z" }),
+    s({ ts: "2026-10-17T00:01:00.000Z", model: "mystery-model-x" }),
+    s({ ts: "2026-10-17T00:00:00.000Z" }),
+  ];
+  const [f] = fleetStats(history, []);
+  assert.equal(f.msgs, 3);
+  assert.equal(f.unknownCost, 1);
+  assert.equal(f.unpricedShare, 1 / 3);
+
+  // Mixed: the number carries a "+" so it can never be read as the whole spend.
+  assert.equal(fmtPartialCost(f.cost, f.msgs - f.unknownCost, f.unknownCost), `${fmtCost(f.cost)}+`);
+  // Fully priced: plain number, no qualifier.
+  assert.equal(fmtPartialCost(0.5, 2, 0), fmtCost(0.5));
+  // Nothing priced: unknown, never "$0.00" (that would read as "free").
+  assert.equal(fmtPartialCost(0, 0, 3), "\u2013");
+
+  const allUnpriced = fleetStats([s({ model: "mystery-model-x" })], [])[0];
+  assert.equal(fmtPartialCost(allUnpriced.cost, allUnpriced.msgs - allUnpriced.unknownCost, allUnpriced.unknownCost), "\u2013");
 });

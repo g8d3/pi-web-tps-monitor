@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { decodeRateOf, isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
-import { contextPressure, fleetStats, fmtCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostUsd, sessionCostUsd, turnWaste, unaccountedMs } from "./browser/models.js";
+import { contextPressure, fleetStats, fmtCost, fmtPartialCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostUsd, sessionCostUsd, turnWaste, unaccountedMs, unpricedTag } from "./browser/models.js";
 
 const HISTORY_FILE = ".pi-web/tps-history.jsonl";
 const TURNS_FILE = ".pi-web/tps-turns.jsonl";
@@ -267,7 +267,7 @@ function renderFleet(history: TpsSample[], turns: TpsTurn[]): string {
   if (!stats.length) return "No sessions yet in this workspace.";
   const rows = stats.map((f) => {
     const ctx = f.pressure === undefined ? "   –" : `${String(Math.round(f.pressure * 100)).padStart(3)}%${f.pressure >= 0.8 ? "!" : " "}`;
-    const cost = f.unknownCost >= f.msgs ? "       –" : fmtCost(f.cost).padStart(8);
+    const cost = fmtPartialCost(f.cost, f.msgs - f.unknownCost, f.unknownCost).padStart(9);
     const waste = f.wastedTurns === 0 ? "   –" : `${String(f.wastedTurns).padStart(2)}${f.wastedCost > 0 ? " " + fmtCost(f.wastedCost) : ""}`;
     return `${shortSession(f.sessionId).padEnd(8)}  msgs ${String(f.msgs).padStart(3)}  turns ${String(f.turns).padStart(3)} (${String(f.done).padStart(3)} done)  ${fmtRate(f.avgTps).padStart(5)} t/s  tools ${(f.toolMs / 1000).toFixed(0).padStart(5)}s  ${cost}  waste ${waste}  ctx ${ctx}`;
   });
@@ -282,11 +282,14 @@ function renderCost(history: TpsSample[], turns: TpsTurn[]): string {
   const cached = history.reduce((a, s) => a + s.cacheRead, 0);
   let cost = 0;
   let priced = 0;
+  let unpriced = 0;
   for (const s of history) {
     const c = sampleCostUsd(s.model, s.input, s.output, s.cacheRead);
-    if (c === undefined) continue;
-    cost += c;
-    priced += 1;
+    if (c === undefined) unpriced += 1;
+    else {
+      cost += c;
+      priced += 1;
+    }
   }
   const done = turns.filter((t) => t.outcome === "completed").length;
   const waste = turnWaste(turns);
@@ -299,7 +302,7 @@ function renderCost(history: TpsSample[], turns: TpsTurn[]): string {
   // Turn rows can outlive the (rotated) sample history, so report whatever is left.
   if (history.length) {
     lines.push(`⚡ ${history.length} messages (${rated.length} rated), in ${input} / out ${output} / cached ${cached} tokens`);
-    lines.push(`est ${fmtCost(cost)} across ${priced} priced messages (${history.length - priced} unpriced)${per}`);
+    lines.push(`est ${fmtCost(cost)} across ${priced} of ${history.length} messages${unpriced > 0 ? ` (${unpricedTag(priced, unpriced)} — cost is a floor)` : ""}${per}`);
   }
   lines.push(`${turns.length} turns, ${done} completed${wasted}`);
   return lines.join("\n");
@@ -386,9 +389,11 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
 
   function renderBudget(cwd: string, sessionId: string): string {
     const budget = budgetFor(sessionId);
-    const { cost } = sessionCostUsd(readHistory(cwd, MAX_HISTORY), sessionId);
+    const { cost, priced, unpriced } = sessionCostUsd(readHistory(cwd, MAX_HISTORY), sessionId);
     const pct = budget > 0 ? Math.round((cost / budget) * 100) : 0;
-    return `💰 session ${shortSession(sessionId)} spend ${fmtCost(cost)} of ${fmtCost(budget)} budget (${pct}%)`;
+    const spend = unpriced > 0 ? `${fmtCost(cost)}+` : fmtCost(cost);
+    const note = unpriced > 0 ? ` (floor: ${unpricedTag(priced, unpriced)} unpriced, not counted)` : "";
+    return `💰 session ${shortSession(sessionId)} spend ${spend} of ${fmtCost(budget)} budget (${pct}%)${note}`;
   }
 
   pi.on("session_start", () => {
@@ -520,8 +525,12 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     appendSample(ctx.cwd, sample);
     // Session budget guardrail: history-backed so it survives restarts.
     // Unpriced models (undefined cost) never trip it.
-    const total = sessionCostUsd(readHistory(ctx.cwd, MAX_HISTORY), sample.sessionId).cost;
+    const guard = sessionCostUsd(readHistory(ctx.cwd, MAX_HISTORY), sample.sessionId);
+    const total = guard.cost;
     const cap = budgetFor(sample.sessionId);
+    // The guardrail is a floor when some messages are unpriced; say so once a
+    // session is actually mixed, so "spent" is never read as a complete figure.
+    const floorNote = guard.unpriced > 0 ? `, floor: ${Math.round((guard.unpriced / (guard.priced + guard.unpriced)) * 100)}% unpriced and not counted` : "";
     const frac = cap > 0 ? total / cap : 0;
     const band = frac >= 1 ? 1 : frac >= 0.8 ? 0.8 : 0;
     const prevBand = budgetBand.get(sample.sessionId) ?? 0;
@@ -529,8 +538,8 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       budgetBand.set(sample.sessionId, band);
       ctx.ui.notify(
         band >= 1
-          ? `💰 Session spend ${fmtCost(total)} hit 100% of the ${fmtCost(cap)} budget (${shortModel(sample.model)}) — further replies keep billing. Raise it with /tps budget <usd>.`
-          : `💰 Session spend ${fmtCost(total)} passed 80% of the ${fmtCost(cap)} budget (${shortModel(sample.model)}) — consider /tps budget <usd> or wrapping up.`,
+          ? `💰 Session spend ${fmtCost(total)}${floorNote} hit 100% of the ${fmtCost(cap)} budget (${shortModel(sample.model)}) — further replies keep billing. Raise it with /tps budget <usd>.`
+          : `💰 Session spend ${fmtCost(total)}${floorNote} passed 80% of the ${fmtCost(cap)} budget (${shortModel(sample.model)}) — consider /tps budget <usd> or wrapping up.`,
         "warning",
       );
     }
