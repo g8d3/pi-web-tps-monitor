@@ -1,7 +1,8 @@
 import { strict as assert } from "node:assert";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import tpsMonitor, { tuning } from "../dist/companion.js";
@@ -331,4 +332,20 @@ test("turn records requested tools from toolUse blocks, flagging uncompleted one
   const turn = JSON.parse(lines[lines.length - 1]);
   assert.equal(turn.requestedTools, 2);
   assert.equal(turn.tools.length, 1);
+});
+
+test("the /tps description advertises every subcommand the handler implements", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "tps-desc-"));
+  const h = makeHarness(cwd);
+  tpsMonitor(h.pi);
+  const desc = h.commands.tps.description;
+  assert.ok(desc, "description present");
+
+  // Every sub === "x" branch in the handler must be named in the description a
+  // user sees in autocomplete, or the help silently falls behind the code.
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "companion.ts"), "utf8");
+  const subs = [...new Set([...src.matchAll(/sub === "([a-z]+)"/g)].map((m) => m[1]))];
+  assert.ok(subs.length >= 8, `expected to find subcommand branches, found ${subs.length}`);
+  const missing = subs.filter((s) => !desc.includes(`/tps ${s}`));
+  assert.deepEqual(missing, [], `description is missing: ${missing.join(", ")}`);
 });

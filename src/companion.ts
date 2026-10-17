@@ -642,7 +642,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("tps", {
-    description: "Show tokens/sec: /tps [n] recent, /tps live, /tps totals, /tps models, /tps turns [n], /tps tools [n], /tps budget [usd]",
+    description: "Show tokens/sec: /tps [n] recent, /tps live, /tps totals, /tps models, /tps turns [n], /tps tools [n], /tps fleet, /tps cost, /tps budget [usd]",
     handler: async (args, ctx: ExtensionContext) => {
       const [sub, rawN] = args.trim().split(/\s+/);
       if (sub === "budget") {
