@@ -9,7 +9,7 @@ import type {
   WorkspacePanelHost,
 } from "@jmfederico/pi-web/plugin-api";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsTurn } from "./protocol.js";
-import { contextPressure, fleetStats, fmtCost } from "../models.js";
+import { contextPressure, fleetStats, fmtCost } from "./models.js";
 
 const POLL_MS = 2000;
 const FETCH_STALE_MS = 1500;

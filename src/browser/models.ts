@@ -3,7 +3,7 @@
 // Unknown models yield undefined everywhere so the UI shows "–" instead of
 // inventing numbers. Dependency-free: imported by companion, browser and tests.
 
-import type { TpsSample, TpsTurn } from "./browser/protocol.js";
+import type { TpsSample, TpsTurn } from "./protocol.js";
 
 export interface ModelInfo {
   /** Substrings matched against the lowercase model id; first hit wins. */

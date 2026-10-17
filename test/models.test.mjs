@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import { contextPressure, fleetStats, fmtCost, modelInfo, sampleCostUsd } from "../dist/models.js";
+import { contextPressure, fleetStats, fmtCost, modelInfo, sampleCostUsd } from "../dist/browser/models.js";
 
 test("modelInfo matches specific families, unknown ids yield undefined", () => {
   const sonnet = modelInfo("anthropic/claude-sonnet-4-5");

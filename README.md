@@ -37,7 +37,7 @@ Terminal only: `pi --extension ./dist/companion.js`, then `/tps`.
 - `src/server.ts` — server peer serving `live`, `history` and `turns` reads.
 - `src/browser/index.ts` — workspace panel + label.
 - `src/browser/protocol.ts` — shared shapes with back-compatible normalization.
-- `src/models.ts` — context limits + indicative prices for known model families; unknown models show `–` instead of invented numbers.
+- `src/browser/models.ts` — context limits + indicative prices for known model families; unknown models show `–` instead of invented numbers.
 
 Live rates during streaming are estimated from streamed chars (`chars/4`);
 final rates use provider `usage.output / duration`. Rows with no observed
