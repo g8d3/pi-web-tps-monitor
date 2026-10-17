@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
-import { contextPressure, fleetStats, fmtCost, fmtLimit, modelInfo, sampleCostUsd } from "./browser/models.js";
+import { contextPressure, fleetStats, fmtCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostUsd, unaccountedMs } from "./browser/models.js";
 
 const HISTORY_FILE = ".pi-web/tps-history.jsonl";
 const TURNS_FILE = ".pi-web/tps-turns.jsonl";
@@ -60,15 +60,34 @@ interface ActiveTurn {
   tools: TpsToolCall[];
 }
 
-interface LastLlm {
+/** Per-turn LLM accumulation: every assistant message folds in, not just the last. */
+interface TurnLlmAcc {
+  messages: number;
   durationMs: number;
   ttftMs: number;
   input: number;
   output: number;
-  tps: number;
   streamed: boolean;
   approx: boolean;
   model: string;
+  requested: number;
+}
+
+function freshAcc(): TurnLlmAcc {
+  return { messages: 0, durationMs: 0, ttftMs: UNKNOWN_TTFT, input: 0, output: 0, streamed: false, approx: false, model: "unknown", requested: 0 };
+}
+
+/** Tool calls the model asked for: explicit call blocks (real shape: {type: "toolCall"}),
+else the stop reason as evidence of at least one. */
+function countRequestedTools(message: { stopReason?: string; content?: unknown }): number {
+  const content = (message as { content?: unknown }).content;
+  if (Array.isArray(content)) {
+    const blocks = content.filter(
+      (b) => typeof b === "object" && b !== null && ((b as { type?: unknown }).type === "toolCall" || (b as { type?: unknown }).type === "toolUse"),
+    );
+    if (blocks.length > 0) return blocks.length;
+  }
+  return message.stopReason === "toolUse" ? 1 : 0;
 }
 
 export function readTurns(cwd: string, limit: number): TpsTurn[] {
@@ -246,12 +265,15 @@ function renderTools(turns: TpsTurn[], limit: number): string {
 function renderTurns(turns: TpsTurn[]): string {
   if (!turns.length) return "No turns yet. Turns are logged when each agent step finishes its tools.";
   const rows = turns.map((t) => {
-    const llm = t.streamed ? `${(t.llmDurationMs / 1000).toFixed(1)}s ${fmtRate(t.tps)}t/s ttft ${fmtMs(t.ttftMs)}` : "– replay";
+    const msgs = t.llmMessages > 1 ? ` (${t.llmMessages} msgs)` : "";
+    const llm = t.streamed ? `${(t.llmDurationMs / 1000).toFixed(1)}s ${fmtRate(t.tps)}t/s ttft ${fmtMs(t.ttftMs)}${msgs}` : "– replay";
+    const missing = t.requestedTools > t.tools.length ? ` (${t.tools.length}/${t.requestedTools} ran)` : "";
     const tools = t.tools.length
-      ? `${t.tools.length} (${t.tools.slice(0, 3).map((c) => `${c.name}${c.isError ? "✗" : ""}`).join(",")}${t.tools.length > 3 ? `+${t.tools.length - 3}` : ""} ${(t.toolMsTotal / 1000).toFixed(1)}s)`
-      : "–";
+      ? `${t.tools.length} (${t.tools.slice(0, 3).map((c) => `${c.name}${c.isError ? "✗" : ""}`).join(",")}${t.tools.length > 3 ? `+${t.tools.length - 3}` : ""} ${(t.toolMsTotal / 1000).toFixed(1)}s)${missing}`
+      : t.requestedTools > 0 ? `– (${t.requestedTools} requested, none ran)` : "–";
+    const gap = hasUnaccountedGap(t) ? ` +${(unaccountedMs(t) / 1000).toFixed(1)}s?` : "";
     const mark = t.outcome !== "completed" ? ` ${t.outcome.toUpperCase()}` : "";
-    return `${t.ts.slice(11, 19)} #${t.turnIndex} ${shortSession(t.sessionId)} ${shortModel(t.model).padEnd(18)} | llm ${llm} | tools ${tools} | turn ${(t.turnMsTotal / 1000).toFixed(1)}s${mark}`;
+    return `${t.ts.slice(11, 19)} #${t.turnIndex} ${shortSession(t.sessionId)} ${shortModel(t.model).padEnd(18)} | llm ${llm} | tools ${tools} | turn ${(t.turnMsTotal / 1000).toFixed(1)}s${gap}${mark}`;
   });
   return "```\n" + rows.join("\n") + "\n```";
 }
@@ -293,20 +315,20 @@ function renderModels(samples: TpsSample[]): string {
 export default function tpsMonitor(pi: ExtensionAPI): void {
   let active: ActiveMessage | undefined;
   let turn: ActiveTurn | undefined;
-  let lastLlm: LastLlm | undefined;
+  let acc: TurnLlmAcc = freshAcc();
   const pressureBand = new Map<string, number>();
 
   pi.on("session_start", () => {
     active = undefined;
     turn = undefined;
-    lastLlm = undefined;
+    acc = freshAcc();
     pressureBand.clear();
   });
 
   pi.on("session_shutdown", () => {
     active = undefined;
     turn = undefined;
-    lastLlm = undefined;
+    acc = freshAcc();
     pressureBand.clear();
   });
 
@@ -432,20 +454,22 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     });
     ctx.ui.setStatus(STATUS_KEY, failed ? `⚠ ${stopReason}` : `⚡ ${fmtRate(tps)} t/s`);
     pi.events.emit("tps:sample", sample);
-    lastLlm = {
-      durationMs: sample.durationMs,
-      ttftMs: sample.ttftMs,
-      input: sample.input,
-      output: sample.output,
-      tps: sample.tps,
-      streamed: sample.streamed,
-      approx: sample.approx,
-      model: sample.model,
-    };
+    if (turn !== undefined) {
+      acc.messages += 1;
+      acc.durationMs += sample.durationMs;
+      acc.input += sample.input;
+      acc.output += sample.output;
+      acc.streamed = acc.streamed || sample.streamed;
+      acc.approx = acc.approx || sample.approx;
+      if (acc.ttftMs === UNKNOWN_TTFT && sample.ttftMs >= 0) acc.ttftMs = sample.ttftMs;
+      acc.model = sample.model;
+      acc.requested += countRequestedTools(event.message);
+    }
   });
 
   pi.on("turn_start", (event) => {
     turn = { index: event.turnIndex, startedAt: event.timestamp ?? Date.now(), tools: [] };
+    acc = freshAcc();
   });
 
   pi.on("tool_execution_end", (event) => {
@@ -454,6 +478,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       name: event.toolName,
       durationMs: event.durationMs ?? 0,
       isError: event.isError,
+      endedAt: Date.now(),
     });
   });
 
@@ -461,29 +486,32 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     const now = Date.now();
     const startedAt = turn?.startedAt ?? now;
     const tools = turn?.tools ?? [];
-    const llm = lastLlm;
     const toolMsTotal = tools.reduce((a, t) => a + t.durationMs, 0);
+    const tps = acc.streamed && acc.durationMs > 0 ? Math.round((acc.output / (acc.durationMs / 1000)) * 10) / 10 : 0;
     const row: TpsTurn = {
       ts: new Date().toISOString(),
       sessionId: sessionIdOf(ctx),
-      model: llm?.model ?? ctx.model?.id ?? "unknown",
+      model: acc.messages > 0 ? acc.model : (ctx.model?.id ?? "unknown"),
       turnIndex: turn?.index ?? event.turnIndex,
-      llmDurationMs: llm?.durationMs ?? 0,
-      ttftMs: llm?.ttftMs ?? UNKNOWN_TTFT,
-      input: llm?.input ?? 0,
-      output: llm?.output ?? 0,
-      tps: llm?.tps ?? 0,
-      streamed: llm?.streamed ?? false,
-      approx: llm?.approx ?? false,
+      llmDurationMs: acc.durationMs,
+      ttftMs: acc.ttftMs,
+      input: acc.input,
+      output: acc.output,
+      tps,
+      streamed: acc.streamed,
+      approx: acc.approx,
       tools,
       toolMsTotal,
       turnMsTotal: Math.max(1, now - startedAt),
       outcome: event.outcome,
       toolErrors: tools.filter((t) => t.isError).length,
+      requestedTools: acc.requested,
+      llmMessages: acc.messages,
     };
     appendTurn(ctx.cwd, row);
     pi.events.emit("tps:turn", row);
     turn = undefined;
+    acc = freshAcc();
   });
 
   pi.registerCommand("tps", {

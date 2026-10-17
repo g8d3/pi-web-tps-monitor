@@ -62,6 +62,20 @@ export function fmtLimit(tokens: number): string {
   return `${tokens}`;
 }
 
+/** Wall-clock in a turn that is neither measured LLM nor measured tools. */
+export const UNACCOUNTED_MIN_MS = 2000;
+export const UNACCOUNTED_MIN_FRAC = 0.3;
+
+export function unaccountedMs(turn: { turnMsTotal: number; llmDurationMs: number; toolMsTotal: number }): number {
+  return Math.max(0, turn.turnMsTotal - turn.llmDurationMs - turn.toolMsTotal);
+}
+
+/** True when the gap is big enough in both absolute and relative terms to flag. */
+export function hasUnaccountedGap(turn: { turnMsTotal: number; llmDurationMs: number; toolMsTotal: number }): boolean {
+  const u = unaccountedMs(turn);
+  return u > UNACCOUNTED_MIN_MS && u > turn.turnMsTotal * UNACCOUNTED_MIN_FRAC;
+}
+
 export interface SessionStat {
   sessionId: string;
   latestTs: string;

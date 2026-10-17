@@ -32,6 +32,8 @@ export interface TpsToolCall {
   name: string;
   durationMs: number;
   isError: boolean;
+  /** Wall-clock end of the call; absent in pre-v16 rows (timeline unknown). */
+  endedAt?: number;
 }
 
 export interface TpsTurn {
@@ -51,6 +53,10 @@ export interface TpsTurn {
   turnMsTotal: number;
   outcome: "completed" | "aborted" | "error";
   toolErrors: number;
+  /** Tool calls the model requested (toolUse stops); may exceed completed tools. */
+  requestedTools: number;
+  /** Assistant messages folded into this turn's LLM slice. */
+  llmMessages: number;
 }
 
 export interface TpsLive {
@@ -148,15 +154,25 @@ export function isTpsTurn(v: unknown): v is TpsTurn {
   if (!Array.isArray(v.tools) || !v.tools.every(isTpsToolCall)) return false;
   if (typeof v.toolMsTotal !== "number" || typeof v.turnMsTotal !== "number") return false;
   if (v.outcome !== "completed" && v.outcome !== "aborted" && v.outcome !== "error") return false;
-  return typeof v.toolErrors === "number";
+  if (typeof v.toolErrors !== "number") return false;
+  if (v.requestedTools !== undefined && typeof v.requestedTools !== "number") return false;
+  if (v.llmMessages !== undefined && typeof v.llmMessages !== "number") return false;
+  return true;
 }
 
 function isTpsToolCall(v: unknown): v is TpsToolCall {
   if (!isRecord(v)) return false;
-  return typeof v.name === "string" && typeof v.durationMs === "number" && typeof v.isError === "boolean";
+  if (typeof v.name !== "string" || typeof v.durationMs !== "number" || typeof v.isError !== "boolean") return false;
+  return v.endedAt === undefined || typeof v.endedAt === "number";
 }
 
-/** Turns have no legacy versions yet; the guard is strict and corrupt lines are dropped. */
+/** Pre-v15 rows lack requestedTools/llmMessages; backfill neutral defaults. */
 export function normalizeTurn(v: unknown): TpsTurn | undefined {
-  return isTpsTurn(v) ? v : undefined;
+  if (!isTpsTurn(v)) return undefined;
+  const raw = v as unknown as { requestedTools?: unknown; llmMessages?: unknown };
+  return {
+    ...v,
+    requestedTools: typeof raw.requestedTools === "number" ? raw.requestedTools : v.tools.length,
+    llmMessages: typeof raw.llmMessages === "number" ? raw.llmMessages : 1,
+  };
 }

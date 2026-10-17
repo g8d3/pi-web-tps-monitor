@@ -279,3 +279,50 @@ test("turn lifecycle logs one step row with llm + tool split", () => {
   assert.equal(turn.outcome, "completed");
   assert.equal(turn.sessionId, "test-session-abcdef123456");
 });
+
+test("turn accumulates every message, not just the last", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "tps-acc-"));
+  const h = makeHarness(cwd);
+  tpsMonitor(h.pi);
+  const usageFor = (output) => ({ input: 10, output, cacheRead: 0, cacheWrite: 0, totalTokens: 10 + output, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
+  h.handlers.turn_start({ turnIndex: 0, timestamp: Date.now() }, h.ctx);
+  h.handlers.message_start({ message: { role: "assistant" } }, h.ctx);
+  h.handlers.message_update({ message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a", partial: {} } }, h.ctx);
+  h.handlers.message_end({ message: { role: "assistant", stopReason: "stop", usage: usageFor(100), content: [{ type: "text", text: "a" }] } }, h.ctx);
+  h.handlers.message_start({ message: { role: "assistant" } }, h.ctx);
+  h.handlers.message_update({ message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "b", partial: {} } }, h.ctx);
+  h.handlers.message_end({ message: { role: "assistant", stopReason: "stop", usage: usageFor(200), content: [{ type: "text", text: "b" }] } }, h.ctx);
+  h.handlers.turn_end({ type: "turn_end", turnIndex: 0, message: {}, toolResults: [], messageEntryId: "m", toolResultEntryIds: [], entries: [], continue: false, context: {}, outcome: "completed" }, h.ctx);
+  const lines = readFileSync(join(cwd, ".pi-web/tps-turns.jsonl"), "utf8").split("\n").filter(Boolean);
+  assert.equal(lines.length, 1);
+  const turn = JSON.parse(lines[0]);
+  assert.equal(turn.llmMessages, 2);
+  assert.equal(turn.output, 300);
+  assert.equal(turn.input, 20);
+  assert.ok(turn.llmDurationMs >= 2);
+  assert.ok(turn.tps > 0);
+});
+
+test("turn records requested tools from toolUse blocks, flagging uncompleted ones", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "tps-req-"));
+  const h = makeHarness(cwd);
+  tpsMonitor(h.pi);
+  const usage = { input: 10, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 60, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  h.handlers.turn_start({ turnIndex: 1, timestamp: Date.now() }, h.ctx);
+  h.handlers.message_start({ message: { role: "assistant" } }, h.ctx);
+  h.handlers.message_update({ message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x", partial: {} } }, h.ctx);
+  h.handlers.message_end({
+    message: {
+      role: "assistant",
+      stopReason: "toolUse",
+      usage,
+      content: [{ type: "toolCall", id: "1", name: "bash" }, { type: "toolCall", id: "2", name: "read" }],
+    },
+  }, h.ctx);
+  h.handlers.tool_execution_end({ toolCallId: "1", toolName: "bash", args: {}, result: null, isError: false, durationMs: 100 }, h.ctx);
+  h.handlers.turn_end({ type: "turn_end", turnIndex: 1, message: {}, toolResults: [], messageEntryId: "m", toolResultEntryIds: [], entries: [], continue: false, context: {}, outcome: "completed" }, h.ctx);
+  const lines = readFileSync(join(cwd, ".pi-web/tps-turns.jsonl"), "utf8").split("\n").filter(Boolean);
+  const turn = JSON.parse(lines[lines.length - 1]);
+  assert.equal(turn.requestedTools, 2);
+  assert.equal(turn.tools.length, 1);
+});

@@ -72,3 +72,24 @@ test("fleetStats rolls sessions up newest-first with cost and pressure", () => {
   assert.ok(stats[0].cost > 0);
   assert.equal(stats[1].sessionId, "bbb");
 });
+
+test("unaccounted gap flags big unexplained remainders only", async () => {
+  const { unaccountedMs, hasUnaccountedGap } = await import("../dist/browser/models.js");
+  assert.equal(unaccountedMs({ turnMsTotal: 9903, llmDurationMs: 2063, toolMsTotal: 0 }), 7840);
+  assert.equal(hasUnaccountedGap({ turnMsTotal: 9903, llmDurationMs: 2063, toolMsTotal: 0 }), true);
+  assert.equal(hasUnaccountedGap({ turnMsTotal: 9903, llmDurationMs: 9000, toolMsTotal: 0 }), false);
+  assert.equal(hasUnaccountedGap({ turnMsTotal: 1500, llmDurationMs: 200, toolMsTotal: 0 }), false);
+});
+
+test("normalizeTurn backfills legacy rows without the new fields", async () => {
+  const { normalizeTurn } = await import("../dist/browser/protocol.js");
+  const legacy = {
+    ts: "2026-10-17T00:00:00.000Z", sessionId: "s", model: "m", turnIndex: 0,
+    llmDurationMs: 100, ttftMs: 10, input: 5, output: 6, tps: 60,
+    streamed: true, approx: false, tools: [{ name: "bash", durationMs: 7, isError: false }],
+    toolMsTotal: 7, turnMsTotal: 200, outcome: "completed", toolErrors: 0,
+  };
+  const turn = normalizeTurn(legacy);
+  assert.equal(turn.requestedTools, 1);
+  assert.equal(turn.llmMessages, 1);
+});

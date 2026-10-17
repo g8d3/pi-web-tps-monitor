@@ -9,7 +9,7 @@ import type {
   WorkspacePanelHost,
 } from "@jmfederico/pi-web/plugin-api";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsTurn } from "./protocol.js";
-import { contextPressure, fleetStats, fmtCost } from "./models.js";
+import { contextPressure, fleetStats, fmtCost, hasUnaccountedGap, unaccountedMs } from "./models.js";
 
 const POLL_MS = 2000;
 const FETCH_STALE_MS = 1500;
@@ -276,7 +276,10 @@ const plugin: PiWebPlugin = {
               const visibleF = fleet.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
               const statsTools = toolStats(listedTools);
 
-              return html`<section><style>
+              return html`<section class="tps"><style>
+  .tps table { border-collapse: collapse; }
+  .tps th, .tps td { border-bottom: 1px solid #888; border-bottom: 1px solid color-mix(in srgb, currentColor 22%, transparent); padding: 3px 6px; text-align: left; vertical-align: top; }
+  .tps thead th { border-bottom: 2px solid #888; border-bottom: 2px solid color-mix(in srgb, currentColor 40%, transparent); }
   @media (max-width: 640px) {
     .tps-narrow-hide { display: none; }
     td.tps-model { display: inline-block; max-width: 15ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
@@ -335,7 +338,7 @@ const plugin: PiWebPlugin = {
                       }}></label>
                     ${isTurns
                       ? html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                          <thead><tr><th></th><th>Time</th><th>Turn</th><th class="tps-narrow-hide">Sess</th><th>LLM</th><th class="tps-narrow-hide">TTFT</th><th>Tools</th><th>Tool time</th><th>Total</th></tr></thead>
+                          <thead><tr><th></th><th>Time</th><th>Turn</th><th class="tps-narrow-hide">Msgs</th><th class="tps-narrow-hide">Sess</th><th>LLM</th><th>t/s</th><th class="tps-narrow-hide">TTFT</th><th>Tools</th><th class="tps-narrow-hide">Tool time</th><th>Total</th></tr></thead>
                           <tbody>
                             ${visibleT.flatMap((t) => {
                               const key = `${t.sessionId}#${t.turnIndex}`;
@@ -348,15 +351,17 @@ const plugin: PiWebPlugin = {
                                 <td>${t.outcome === "completed" ? toggle : html`✗ ${toggle}`}</td>
                                 <td>${clock(t.ts)}</td>
                                 <td>#${t.turnIndex}</td>
+                                <td class="tps-narrow-hide">${t.llmMessages}</td>
                                 <td class="tps-narrow-hide"><button @click=${() => { gotoSession(t.sessionId); }} title="Show only this session">${shortSession(t.sessionId)}</button></td>
-                                <td>${t.streamed ? html`${(t.llmDurationMs / 1000).toFixed(1)}s ${fmtRate(t.tps)}` : html`–`}</td>
+                                <td>${t.streamed ? html`${(t.llmDurationMs / 1000).toFixed(1)}s` : html`–`}</td>
+                                <td>${t.streamed ? html`${fmtRate(t.tps)}` : html`–`}</td>
                                 <td class="tps-narrow-hide">${fmtMs(t.ttftMs)}</td>
-                                <td>${t.tools.length ? t.tools.slice(0, 3).map((c) => c.name).join(",") + (t.tools.length > 3 ? `+${t.tools.length - 3}` : "") : "–"}</td>
-                                <td>${(t.toolMsTotal / 1000).toFixed(1)}s</td>
-                                <td>${(t.turnMsTotal / 1000).toFixed(1)}s</td>
+                                <td>${t.tools.length ? t.tools.slice(0, 3).map((c) => c.name).join(", ") : "–"}</td>
+                                <td class="tps-narrow-hide">${(t.toolMsTotal / 1000).toFixed(1)}s</td>
+                                <td title=${hasUnaccountedGap(t) ? `+${(unaccountedMs(t) / 1000).toFixed(1)}s unaccounted: requested tools never completed, or time outside measured messages and tools` : "Step wall-clock"}>${(t.turnMsTotal / 1000).toFixed(1)}s${hasUnaccountedGap(t) ? " ⚠" : ""}</td>
                               </tr>`;
                               if (!open) return [row];
-                              const detail = html`<tr><td></td><td colspan="8">${t.tools.length
+                              const detail = html`<tr><td></td><td colspan="10">${t.llmMessages > 1 ? html`<div>${t.llmMessages} messages, ${(t.llmDurationMs / 1000).toFixed(1)}s total</div>` : ""}${t.requestedTools > t.tools.length ? html`<div>⚠ ${t.requestedTools} requested, ${t.tools.length} completed</div>` : ""}${t.tools.length
                                 ? t.tools.map((c) => html`<div>${c.name} — ${(c.durationMs / 1000).toFixed(1)}s${c.isError ? " ✗" : ""}</div>`)
                                 : html`<em>no tool calls this turn</em>`}</td></tr>`;
                               return [row, detail];
