@@ -64,13 +64,22 @@ about it, that is the retainer.
 
 ## Install
 
-In PI WEB: **Settings → Pi packages → install** `npm:pi-web-tps-monitor`,
-then **Settings → PI WEB plugins → enable TPS Monitor**, restart the session
-daemon when safe (`systemctl --user restart pi-web-sessiond`), reload the
-browser. New sessions pick up the companion automatically; `/reload` an idle
-session to add it to a live one.
+> The package is **not on npm yet** — `npm:pi-web-tps-monitor` is the intended
+> name for when it is published. Until then install from the local checkout or
+> straight from git, both of which work today.
+
+From a local checkout (how this machine runs it; `package_path` in `needs.json`):
+add it as a Pi package in **Settings → Pi packages**, then **Settings → PI WEB
+plugins → enable TPS Monitor**. From git instead, use the repo URL in place of
+the local path.
+
+Then restart the session daemon when safe (`systemctl --user restart
+pi-web-sessiond`) and reload the browser. New sessions pick up the companion
+automatically; `/reload` an idle session to add it to a live one.
 
 Terminal only: `pi --extension ./dist/companion.js`, then `/tps`.
+
+See [CHANGELOG.md](CHANGELOG.md) for what each release changed.
 
 ## How it works
 
