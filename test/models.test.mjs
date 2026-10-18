@@ -8,17 +8,21 @@ test("modelInfo matches specific families, unknown ids yield undefined", () => {
   assert.equal(sonnet?.label, "Claude Sonnet");
   assert.equal(sonnet?.contextLimit, 200_000);
   assert.equal(modelInfo("openai/gpt-5-mini")?.label, "GPT-5");
-  assert.equal(modelInfo("muse-spark-1.3-contributor"), undefined);
+  const spark = modelInfo("muse-spark-1.3-contributor");
+  assert.equal(spark?.label, "Muse Spark");
+  assert.equal(spark?.contextLimit, 1_048_576);
+  assert.equal(modelInfo("some-future-model"), undefined);
 });
 
 test("contextPressure is input+cache over the window", () => {
   assert.equal(contextPressure("x/sonnet-4", 100_000, 60_000), 0.8);
-  assert.equal(contextPressure("muse-spark-1.3-contributor", 1, 1), undefined);
+  assert.equal(contextPressure("muse-spark-1.3-contributor", 1, 1), 2 / 1_048_576);
+  assert.equal(contextPressure("some-future-model", 1, 1), undefined);
 });
 
 test("sampleCostUsd prices known models, unknown yields undefined", () => {
   assert.equal(sampleCostUsd("x/sonnet-4", 1_000_000, 1_000_000, 1_000_000), 18.3);
-  assert.equal(sampleCostUsd("muse-spark-1.3-contributor", 100, 100, 0), undefined);
+  assert.ok(Math.abs((sampleCostUsd("muse-spark-1.3-contributor", 1_000_000, 1_000_000, 1_000_000) ?? NaN) - 0.302) < 1e-12);
   assert.equal(sampleCostUsd("qwen3-235b", 100, 100, 0), undefined);
   assert.equal(fmtCost(0.02344), "$0.0234");
 });

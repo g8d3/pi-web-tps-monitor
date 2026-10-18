@@ -26,6 +26,10 @@ export interface TpsSample {
   cacheRead: number;
   cacheWrite: number;
   reasoning?: number;
+  /** Actual billed USD for this message, from Pi's own usage cost
+   * (provider registry pricing — the number behind the session footer).
+   * Absent on pre-fix rows, which fall back to the table estimate. */
+  costUsd?: number;
   /** false when no streamed deltas were observed (replay/buffered flush): tps is 0 and excluded from averages. */
   streamed: boolean;
   status: "ok" | "failed";
@@ -50,6 +54,9 @@ export interface TpsTurn {
   ttftMs: number;
   input: number;
   output: number;
+  /** Accumulated actual billed USD across the turn's messages; present only
+   * when every message in the turn carried an actual. Else the table estimate. */
+  costUsd?: number;
   /** Blended rate over the whole turn (includes pre-first-token latency). */
   tps: number;
   /** Decode rate: llmMessages output over the post-first-token window. */
@@ -106,6 +113,7 @@ export function isTpsSample(v: unknown): v is TpsSample {
     isOptionalNumber(v, "cacheRead") &&
     isOptionalNumber(v, "cacheWrite") &&
     isOptionalNumber(v, "reasoning") &&
+    isOptionalNumber(v, "costUsd") &&
     (v.streamed === undefined || typeof v.streamed === "boolean") &&
     (v.status === undefined || v.status === "ok" || v.status === "failed") &&
     (v.stopReason === undefined || typeof v.stopReason === "string") &&
@@ -151,6 +159,7 @@ export function normalizeSample(v: unknown): TpsSample | undefined {
     cacheRead: v.cacheRead ?? 0,
     cacheWrite: v.cacheWrite ?? 0,
     ...(typeof v.reasoning === "number" ? { reasoning: v.reasoning } : {}),
+    ...(typeof v.costUsd === "number" ? { costUsd: v.costUsd } : {}),
     streamed,
     status: v.status === "failed" ? "failed" : "ok",
     stopReason: typeof v.stopReason === "string" ? v.stopReason : "",
@@ -186,6 +195,7 @@ export function isTpsTurn(v: unknown): v is TpsTurn {
   if (typeof v.llmMessages !== "undefined" && typeof v.llmMessages !== "number") return false;
   if (typeof v.decodeTps !== "undefined" && typeof v.decodeTps !== "number") return false;
   if (typeof v.preResponseMs !== "undefined" && typeof v.preResponseMs !== "number") return false;
+  if (typeof v.costUsd !== "undefined" && typeof v.costUsd !== "number") return false;
   return true;
 }
 

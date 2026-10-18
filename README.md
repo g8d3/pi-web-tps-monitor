@@ -69,12 +69,15 @@ Contact: **hola@focalis.cc**.
 
 ## Reading the numbers
 
-- **Cost is an estimate, not an invoice.** It comes from the indicative list
-  price of each model (see `src/browser/models.ts`). A model we have no price for
-  contributes nothing to the number.
+- **Cost is the billed number, not a re-estimate.** Each message row carries
+  Pi's own `usage.cost.total` (provider registry pricing — the same math behind
+  the session footer), and every cost surface sums those actuals. Rows recorded
+  before actuals existed fall back to the table in `src/browser/models.ts`,
+  which tracks the pi-ai registry bundled with Pi; a model with neither an
+  actual nor a table price contributes nothing.
 - **A trailing `+` means the cost is a floor, not a total.** Some messages in that
-  session ran on a model with no list price, so the real spend is at least the
-  figure shown. Hover the cell for the unpriced share. A session that is *entirely*
+  session have neither a recorded actual nor a list price, so the real spend is
+  at least the figure shown. Hover the cell for the unpriced share. A session that is *entirely*
   unpriced shows `–` rather than a number, because `$0.00` would read as "free".
 - **The budget guardrail is a floor too**, for the same reason: it warns off the
   priced part of your spend and tells you what share it left out.

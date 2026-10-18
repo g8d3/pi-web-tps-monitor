@@ -1,7 +1,12 @@
 // Reference data for well-known model families: context windows and list prices.
-// Indicative public pricing in USD per 1M tokens; reviewed when providers move.
-// Unknown models yield undefined everywhere so the UI shows "–" instead of
-// inventing numbers. Dependency-free: imported by companion, browser and tests.
+// Context windows and prices track the pi-ai provider registry bundled with Pi
+// (node_modules/@earendil-works/pi-ai/dist/providers/data/*.json) — the same
+// registry Pi's own calculateCost() bills from, so table estimates stay close to
+// actuals on rows recorded before actuals existed. Since the companion records
+// usage.cost.total per message, new rows don't need this table at all; it is
+// only the fallback for old rows and the ctx denominator. Unknown models yield
+// undefined everywhere so the UI shows "–" instead of inventing numbers.
+// Dependency-free: imported by companion, browser and tests.
 
 import type { TpsSample, TpsTurn } from "./protocol.js";
 
@@ -27,7 +32,12 @@ export const KNOWN_MODELS: ModelInfo[] = [
   { match: ["gemini-2.5-pro", "gemini-3-pro", "gemini-pro"], label: "Gemini Pro", contextLimit: 1_000_000, inputPerMTok: 1.25, outputPerMTok: 10, cacheReadPerMTok: 0.31 },
   { match: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash"], label: "Gemini Flash", contextLimit: 1_000_000, inputPerMTok: 0.3, outputPerMTok: 2.5, cacheReadPerMTok: 0.075 },
   { match: ["grok-4", "grok-3", "grok"], label: "Grok", contextLimit: 256_000, inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.75 },
-  { match: ["deepseek"], label: "DeepSeek", contextLimit: 128_000, inputPerMTok: 0.27, outputPerMTok: 1.1, cacheReadPerMTok: 0.07 },
+  { match: ["deepseek-v4.1-flash"], label: "DeepSeek V4.1 Flash", contextLimit: 1_000_000, inputPerMTok: 0.15, outputPerMTok: 0.6, cacheReadPerMTok: 0.003 },
+  { match: ["deepseek-v4-pro", "deepseek-v4"], label: "DeepSeek V4", contextLimit: 1_000_000, inputPerMTok: 0.66, outputPerMTok: 1.98, cacheReadPerMTok: 0.022 },
+  { match: ["deepseek"], label: "DeepSeek", contextLimit: 1_000_000 },
+  { match: ["muse-spark"], label: "Muse Spark", contextLimit: 1_048_576, inputPerMTok: 0.1, outputPerMTok: 0.2, cacheReadPerMTok: 0.002 },
+  { match: ["glm-5.3-flash"], label: "GLM Flash", contextLimit: 1_000_000, inputPerMTok: 0.15, outputPerMTok: 0.5, cacheReadPerMTok: 0.03 },
+  { match: ["glm-5"], label: "GLM", contextLimit: 1_000_000, inputPerMTok: 1.4, outputPerMTok: 4.4, cacheReadPerMTok: 0.26 },
   { match: ["qwen3", "qwen-3", "qwen-max", "qwen-plus", "qwen"], label: "Qwen", contextLimit: 256_000 },
   { match: ["glm-4"], label: "GLM", contextLimit: 128_000 },
 ];
@@ -52,6 +62,14 @@ export function sampleCostUsd(model: string, input: number, output: number, cach
   return (input / 1_000_000) * info.inputPerMTok + (output / 1_000_000) * info.outputPerMTok + cache;
 }
 
+/** Billed USD for one message: the recorded actual when present (Pi's own
+ * usage cost, i.e. provider registry pricing), else the table estimate.
+ * Undefined only when neither exists — those rows are the `+` floor. */
+export function sampleCostOf(s: Pick<TpsSample, "model" | "input" | "output" | "cacheRead"> & { costUsd?: number }): number | undefined {
+  if (typeof s.costUsd === "number" && Number.isFinite(s.costUsd)) return s.costUsd;
+  return sampleCostUsd(s.model, s.input, s.output, s.cacheRead);
+}
+
 /** Accumulated priced spend for one session; unpriced messages counted separately. */
 export function sessionCostUsd(samples: TpsSample[], sessionId: string): { cost: number; priced: number; unpriced: number } {
   let cost = 0;
@@ -59,7 +77,7 @@ export function sessionCostUsd(samples: TpsSample[], sessionId: string): { cost:
   let unpriced = 0;
   for (const s of samples) {
     if (s.sessionId !== sessionId) continue;
-    const c = sampleCostUsd(s.model, s.input, s.output, s.cacheRead);
+    const c = sampleCostOf(s);
     if (c === undefined) unpriced += 1;
     else {
       cost += c;
@@ -118,8 +136,10 @@ export function isWastedTurn(t: Pick<TpsTurn, "outcome" | "output">): boolean {
   return t.outcome !== "completed" || t.output === 0;
 }
 
-/** Priced cost estimate of one turn's LLM slice (no cache-read split at turn level). */
-export function turnCostUsd(t: Pick<TpsTurn, "model" | "input" | "output">): number | undefined {
+/** Priced cost of one turn's LLM slice: recorded actuals when the turn carried
+ * them, else the table estimate (no cache-read split at turn level). */
+export function turnCostUsd(t: Pick<TpsTurn, "model" | "input" | "output"> & { costUsd?: number }): number | undefined {
+  if (typeof t.costUsd === "number" && Number.isFinite(t.costUsd)) return t.costUsd;
   return sampleCostUsd(t.model, t.input, t.output, 0);
 }
 
@@ -164,15 +184,17 @@ export interface SessionStat {
   /** Estimated USD burned on those turns; unpriced wasted turns counted apart. */
   wastedCost: number;
   wastedUnpriced: number;
-  /** Turn-derived spend estimate for this session (may differ from message-derived cost). */
+  /** Turn-derived spend for this session (actuals when recorded, else table
+   * estimate; may differ from message-derived cost). */
   turnCost: number;
   toolMs: number;
-  /** Estimated USD from priced messages; unknowns counted separately. */
+  /** USD from priced messages (recorded actuals first, table fallback);
+   * unknowns counted separately. */
   cost: number;
   unknownCost: number;
-  /** Fraction of this session's messages with no list price (0..1). When > 0 the
-   * `cost` above is a PARTIAL total, and every surface must say so rather than
-   * presenting it as the session's whole spend. */
+  /** Fraction of this session's messages with neither an actual nor a list
+   * price (0..1). When > 0 the `cost` above is a PARTIAL total, and every
+   * surface must say so rather than presenting it as the session's whole spend. */
   unpricedShare: number;
   pressure?: number;
 }
@@ -198,7 +220,7 @@ export function fleetStats(history: TpsSample[], turns: TpsTurn[]): SessionStat[
     let cost = 0;
     let unknownCost = 0;
     for (const s of samples) {
-      const c = sampleCostUsd(s.model, s.input, s.output, s.cacheRead);
+      const c = sampleCostOf(s);
       if (c === undefined) unknownCost += 1;
       else cost += c;
     }

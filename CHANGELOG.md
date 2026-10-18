@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.10.7 — cost is the billed number, ctx windows match the registry
+
+Fleet cost, `/tps cost`, `/tps fleet` and the budget guardrail used to
+re-estimate spend from a hardcoded price table whose deepseek row was 12x too
+high on live traffic ($6.94 shown vs $0.58 billed across 415 deepseek-v4.1-flash
+messages in `.pi-web/tps-history.jsonl`) and whose context windows were 8x too
+small (deepseek-v4.1-flash read 203% pressure vs 26% true; muse-spark showed `–`).
+Each message row now carries Pi's own `usage.cost.total`, and every cost surface
+sums those actuals — equal to the billed cost by construction, not by table
+maintenance. Rows recorded before actuals existed fall back to a table
+corrected against the bundled pi-ai registry (deepseek-v4.1-flash 1M ctx +
+0.15/0.6/0.003, deepseek-v4-pro, muse-spark 1M ctx + 0.1/0.2/0.002, glm-5.x);
+turn rows accumulate message actuals the same way. Repricing the same 500 live
+rows with the fix totals $0.577 with zero rows over 100% ctx. `test/
+cost-actuals.test.mjs` pins it: actuals beat the table, mixed turns fall back,
+old-table fixtures now bill from the harness model. All 56 tests pass.
+
 ## v0.10.6 — the package can be installed with one command
 
 A git install (`pi install git:github.com/g8d3/pi-web-tps-monitor`) previously produced a

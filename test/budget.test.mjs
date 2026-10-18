@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import tpsMonitor, { DEFAULT_BUDGET_USD } from "../dist/companion.js";
-import { sessionCostUsd } from "../dist/browser/models.js";
+import { sampleCostUsd, sessionCostUsd } from "../dist/browser/models.js";
 
 // Priced family: sonnet-4 matches "sonnet-4" -> $3/MTok in, $15/MTok out.
 const PRICED_MODEL = "test/sonnet-4";
@@ -39,12 +39,16 @@ function sendMessage(h, { input, output }) {
     { message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x", partial: {} } },
     h.ctx,
   );
+  // Fixture billed totals follow the same table the fallback uses, billed from
+  // the harness model, so the guardrail exercises the recorded-actual path
+  // with realistic numbers (and stays silent for models with no price).
+  const total = sampleCostUsd(h.ctx.model.id, input, output, 0) ?? 0;
   h.handlers.message_end(
     {
       message: {
         role: "assistant",
         stopReason: "stop",
-        usage: { input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        usage: { input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } },
         content: [{ type: "text", text: "x" }],
       },
     },
@@ -65,7 +69,7 @@ test("sessionCostUsd totals one session, skipping others and counting unpriced",
     s({ sessionId: "aaa" }), // $3.00
     s({ sessionId: "aaa", output: 1_000_000 }), // $3 + $15 = $18
     s({ sessionId: "bbb" }), // other session: ignored
-    s({ sessionId: "aaa", model: "muse-spark-1.3-contributor" }), // unpriced
+    s({ sessionId: "aaa", model: "qwen3-235b" }), // unpriced
   ];
   assert.deepEqual(sessionCostUsd(rows, "aaa"), { cost: 21, priced: 2, unpriced: 1 });
   assert.deepEqual(sessionCostUsd(rows, "zzz"), { cost: 0, priced: 0, unpriced: 0 });
@@ -118,7 +122,7 @@ test("companion warns once at 80% and once at 100% of session spend", () => {
 
 test("unpriced models never trip the guardrail", () => {
   const h = makeHarness(mkdtempSync(join(tmpdir(), "tps-free-")));
-  h.ctx.model = { id: "muse-spark-1.3-contributor" };
+  h.ctx.model = { id: "qwen3-235b" };
   tpsMonitor(h.pi);
   h.commands.tps.handler("budget 0.000001", h.ctx);
   sendMessage(h, { input: 5_000_000, output: 5_000_000 });

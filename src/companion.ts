@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { decodeRateOf, isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
-import { contextPressure, fleetStats, fmtCost, fmtPartialCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostUsd, sessionCostUsd, turnWaste, unaccountedMs, unpricedTag } from "./browser/models.js";
+import { contextPressure, fleetStats, fmtCost, fmtPartialCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostOf, sessionCostUsd, turnWaste, unaccountedMs, unpricedTag } from "./browser/models.js";
 
 const HISTORY_FILE = ".pi-web/tps-history.jsonl";
 const TURNS_FILE = ".pi-web/tps-turns.jsonl";
@@ -76,6 +76,9 @@ interface TurnLlmAcc {
   ttftMs: number;
   input: number;
   output: number;
+  /** Sum of recorded actuals; valid only when costMessages === messages. */
+  cost: number;
+  costMessages: number;
   streamed: boolean;
   approx: boolean;
   model: string;
@@ -83,7 +86,7 @@ interface TurnLlmAcc {
 }
 
 function freshAcc(): TurnLlmAcc {
-  return { messages: 0, durationMs: 0, ttftMs: UNKNOWN_TTFT, input: 0, output: 0, streamed: false, approx: false, model: "unknown", requested: 0 };
+  return { messages: 0, durationMs: 0, ttftMs: UNKNOWN_TTFT, input: 0, output: 0, cost: 0, costMessages: 0, streamed: false, approx: false, model: "unknown", requested: 0 };
 }
 
 /** Tool calls the model asked for: explicit call blocks (real shape: {type: "toolCall"}),
@@ -277,6 +280,17 @@ function renderFleet(history: TpsSample[], turns: TpsTurn[]): string {
   return "```\n" + rows.join("\n") + "\n```";
 }
 
+/** Actual billed USD from a message usage block (Pi's own registry pricing).
+ * Defensive read: never throws, yields undefined when the provider reported
+ * no cost (approx rows, older runtimes). */
+function actualCostUsd(usage: unknown): number | undefined {
+  if (typeof usage !== "object" || usage === null) return undefined;
+  const cost = (usage as { cost?: unknown }).cost;
+  if (typeof cost !== "object" || cost === null) return undefined;
+  const total = (cost as { total?: unknown }).total;
+  return typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : undefined;
+}
+
 function renderCost(history: TpsSample[], turns: TpsTurn[]): string {
   if (!history.length && !turns.length) return "No samples yet.";
   const rated = history.filter((s) => s.streamed && s.status === "ok");
@@ -287,7 +301,7 @@ function renderCost(history: TpsSample[], turns: TpsTurn[]): string {
   let priced = 0;
   let unpriced = 0;
   for (const s of history) {
-    const c = sampleCostUsd(s.model, s.input, s.output, s.cacheRead);
+    const c = sampleCostOf(s);
     if (c === undefined) unpriced += 1;
     else {
       cost += c;
@@ -514,6 +528,10 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     // Decode rate: generation speed over the window after the first token landed,
     // so a slow provider (long TTFT) is not scored as a slow decoder.
     const decodeTps = streamed ? decodeRateOf({ output, durationMs, ttftMs }) : UNKNOWN_TTFT;
+    // The billed number for this message. On rows that carry it every cost
+    // surface below is an actual, not an estimate; older rows without it
+    // fall back to the table in models.ts.
+    const actual = actualCostUsd(usage);
     const sample: TpsSample = {
       ts: new Date().toISOString(),
       model: ctx.model?.id ?? finished.model,
@@ -528,6 +546,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       cacheRead: usage?.cacheRead ?? 0,
       cacheWrite: usage?.cacheWrite ?? 0,
       ...(typeof usage?.reasoning === "number" ? { reasoning: usage.reasoning } : {}),
+      ...(actual !== undefined ? { costUsd: actual } : {}),
       streamed,
       status: failed ? "failed" : "ok",
       stopReason,
@@ -583,6 +602,10 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       acc.durationMs += sample.durationMs;
       acc.input += sample.input;
       acc.output += sample.output;
+      if (actual !== undefined) {
+        acc.cost += actual;
+        acc.costMessages += 1;
+      }
       acc.streamed = acc.streamed || sample.streamed;
       acc.approx = acc.approx || sample.approx;
       if (acc.ttftMs === UNKNOWN_TTFT && sample.ttftMs >= 0) acc.ttftMs = sample.ttftMs;
@@ -623,6 +646,9 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       ttftMs: acc.ttftMs,
       input: acc.input,
       output: acc.output,
+      // Whole-turn actual only when every message carried one; a partial sum
+      // would pose as a total, so mixed turns fall back to the table estimate.
+      ...(acc.messages > 0 && acc.costMessages === acc.messages ? { costUsd: acc.cost } : {}),
       tps,
       ...(decodeTps >= 0 ? { decodeTps } : {}),
       streamed: acc.streamed,
