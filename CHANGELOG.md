@@ -11,7 +11,9 @@ package **without `dist/`**: the plugin declares `dist/companion.js`, `dist/brow
 Now `package.json` carries `"prepare": "npm run build"`. Verified: `npm pack --dry-run` runs
 prepare and lists `dist/browser/index.js`, `dist/browser/models.js`, `dist/browser/protocol.js`,
 `dist/companion.js`, `dist/server.js` in the tarball. README documents both install paths and the
-npm 12 caveat (`allow-scripts` blocks lifecycle scripts on some setups; the flag is in the README).
+npm 12 caveat: lifecycle scripts can be blocked, and the fix that was verified end to end is
+`"allowScripts": ["pi-web-tps-monitor"]` in the consuming project (a fresh install then builds
+`dist/`; `--allow-scripts` is rejected for project installs).
 
 Still true and unchanged: the package is **not on npm** — `npm whoami` on this machine returns
 401, so publishing needs a valid token.

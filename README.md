@@ -95,13 +95,16 @@ Two paths, both one command.
 pi install git:github.com/g8d3/pi-web-tps-monitor
 ```
 
-If your npm blocks lifecycle scripts by default (npm 12 has `allow-scripts`, which is why the
-install above can finish without a build), allow this package once and reinstall:
+If your npm blocks lifecycle scripts (npm 12 does this by default in some configurations, and
+`--allow-scripts` is rejected for project installs), allow this package in the consuming
+project and reinstall — verified working:
 
-```bash
-npm install --allow-scripts=pi-web-tps-monitor
-pi install git:github.com/g8d3/pi-web-tps-monitor
+```json
+{ "allowScripts": ["pi-web-tps-monitor"] }
 ```
+
+If the install finishes without a build, `npm run build` inside the installed package is the
+fallback.
 
 **From a local checkout** (what this workspace uses):
 
