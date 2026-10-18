@@ -4,6 +4,20 @@ Live **tokens/sec**, **TTFT**, per-turn step timing and per-tool costs — in th
 terminal and in a PI WEB workspace tab. A Pi companion extension measures every
 assistant message and agent turn; a PI WEB plugin renders it.
 
+Built for [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), the
+terminal coding agent, and [PI WEB](https://www.npmjs.com/package/@jmfederico/pi-web), its
+browser UI. Free and MIT licensed.
+
+## Quick start
+
+```bash
+pi install git:github.com/g8d3/pi-web-tps-monitor
+```
+
+Then type `/tps` in any Pi session. In PI WEB, enable **TPS Monitor** in
+**Settings → PI WEB plugins** and open the `TPS` tab. Details and troubleshooting are in
+[Install](#install).
+
 ## What you get
 
 | Surface | Details |
@@ -118,7 +132,7 @@ fallback.
 **From a local checkout** (what this workspace uses):
 
 ```bash
-git clone <repo> && cd pi-web-tps-monitor
+git clone https://github.com/g8d3/pi-web-tps-monitor && cd pi-web-tps-monitor
 npm install && npm run build
 ```
 
