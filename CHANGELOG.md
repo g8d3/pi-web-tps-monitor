@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.6 — the package can be installed with one command
+
+A git install (`pi install git:github.com/g8d3/pi-web-tps-monitor`) previously produced a
+package **without `dist/`**: the plugin declares `dist/companion.js`, `dist/browser/` and
+`dist/server.js`, and nothing built them for the installer, so a fresh install loaded nothing.
+`npm pack --dry-run` confirmed the published tarball would have been broken the same way
+(22 files, no `dist/`).
+
+Now `package.json` carries `"prepare": "npm run build"`. Verified: `npm pack --dry-run` runs
+prepare and lists `dist/browser/index.js`, `dist/browser/models.js`, `dist/browser/protocol.js`,
+`dist/companion.js`, `dist/server.js` in the tarball. README documents both install paths and the
+npm 12 caveat (`allow-scripts` blocks lifecycle scripts on some setups; the flag is in the README).
+
+Still true and unchanged: the package is **not on npm** — `npm whoami` on this machine returns
+401, so publishing needs a valid token.
+
 ## v0.10.5 — the Fleet view points at the free preview
 
 The Fleet view reads `.pi-web/tps-turns.jsonl`; the same file is the input to the free

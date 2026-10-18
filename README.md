@@ -86,18 +86,38 @@ Contact: **hola@focalis.cc**.
 
 ## Install
 
-> The package is **not on npm yet** — `npm:pi-web-tps-monitor` is the intended
-> name for when it is published (a published install would ship `dist/`
-> prebuilt). Until then, install from a local checkout.
+Two paths, both one command.
 
-The plugin loads built artifacts (`dist/companion.js`, `dist/browser/`,
-`dist/server.js`), and `dist/` is not committed, so a checkout must be built
-first:
+**As a Pi package (recommended).** Pi installs the package's dependencies and runs its
+`prepare` script, which builds `dist/`:
+
+```bash
+pi install git:github.com/g8d3/pi-web-tps-monitor
+```
+
+If your npm blocks lifecycle scripts by default (npm 12 has `allow-scripts`, which is why the
+install above can finish without a build), allow this package once and reinstall:
+
+```bash
+npm install --allow-scripts=pi-web-tps-monitor
+pi install git:github.com/g8d3/pi-web-tps-monitor
+```
+
+**From a local checkout** (what this workspace uses):
 
 ```bash
 git clone <repo> && cd pi-web-tps-monitor
 npm install && npm run build
 ```
+
+`dist/` is not committed — the plugin loads built artifacts (`dist/companion.js`,
+`dist/browser/`, `dist/server.js`), so a checkout must be built once (the `prepare` script
+does it for you).
+
+> The package is **not on npm yet** — `npm:pi-web-tps-monitor` is the intended name for when
+> it is published. `npm pack` now builds `dist/` into the tarball (`prepare`), so the published
+> package would work; publishing needs a valid npm token, which this machine does not have
+> (`npm whoami` → 401).
 
 Then add that directory as a Pi package in **Settings → Pi packages**, and
 enable **TPS Monitor** in **Settings → PI WEB plugins**.
