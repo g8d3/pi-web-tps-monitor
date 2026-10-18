@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { decodeRateOf, isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
-import { contextPressure, fleetStats, fmtCost, fmtPartialCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostOf, sessionCostUsd, turnWaste, unaccountedMs, unpricedTag } from "./browser/models.js";
+import { contextPressure, fleetStats, fmtCost, fmtPartialCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostOf, sessionCostUsd, sessionLabel, turnWaste, unaccountedMs, unpricedTag } from "./browser/models.js";
 
 const HISTORY_FILE = ".pi-web/tps-history.jsonl";
 const TURNS_FILE = ".pi-web/tps-turns.jsonl";
@@ -58,6 +58,47 @@ function sessionIdOf(ctx: { sessionManager?: { getSessionId?: () => string } }):
 
 export function shortSession(id: string): string {
   return id ? id.slice(0, 8) : "–";
+}
+
+/** Pi's user-defined session name, when set. Guarded like sessionIdOf: older
+ * runtimes lack getSessionName, and it must be called as a method. */
+function sessionNameOf(ctx: { sessionManager?: { getSessionName?: () => string | undefined } }): string | undefined {
+  try {
+    const sm = ctx.sessionManager;
+    if (sm && typeof sm.getSessionName === "function") {
+      const name = sm.getSessionName();
+      if (typeof name === "string" && name.trim().length > 0) return name.trim();
+    }
+  } catch {
+    // fall through: unnamed
+  }
+  return undefined;
+}
+
+/** Plain text out of a user message, whatever shape its content takes. */
+function userTextOf(message: { content?: unknown }): string {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((b) => (typeof b === "object" && b !== null && typeof (b as { text?: unknown }).text === "string" ? (b as { text: string }).text : ""))
+      .join(" ");
+  }
+  return "";
+}
+
+const SLUG_MAX = 40;
+
+/** URL-style slug of the session's opening prompt: `Fix fleet cost` becomes
+ * `fix-fleet-cost`. Short on purpose — it is stored on every row. */
+export function slugOf(text: string): string | undefined {
+  const slug = text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, SLUG_MAX)
+    .replace(/-+$/g, "");
+  return slug.length > 0 ? slug : undefined;
 }
 
 interface ActiveTurn {
@@ -255,6 +296,7 @@ function rateable(samples: TpsSample[]): TpsSample[] {
 interface FlatTool {
   ts: string;
   sessionId: string;
+  sessionName?: string;
   turnIndex: number;
   name: string;
   durationMs: number;
@@ -265,10 +307,17 @@ export function flattenTools(turns: TpsTurn[]): FlatTool[] {
   const out: FlatTool[] = [];
   for (const t of turns) {
     for (const c of t.tools) {
-      out.push({ ts: t.ts, sessionId: t.sessionId, turnIndex: t.turnIndex, name: c.name, durationMs: c.durationMs, isError: c.isError });
+      out.push({ ts: t.ts, sessionId: t.sessionId, ...(t.sessionName !== undefined ? { sessionName: t.sessionName } : {}), turnIndex: t.turnIndex, name: c.name, durationMs: c.durationMs, isError: c.isError });
     }
   }
   return out.sort((a, b) => b.durationMs - a.durationMs);
+}
+
+function latestName(history: TpsSample[], sessionId: string): string | undefined {
+  return history
+    .filter((s) => s.sessionId === sessionId && typeof s.sessionName === "string" && s.sessionName.length > 0)
+    .sort((a, b) => a.ts.localeCompare(b.ts))
+    .at(-1)?.sessionName;
 }
 
 function renderFleet(history: TpsSample[], turns: TpsTurn[]): string {
@@ -278,7 +327,7 @@ function renderFleet(history: TpsSample[], turns: TpsTurn[]): string {
     const ctx = f.pressure === undefined ? "   –" : `${String(Math.round(f.pressure * 100)).padStart(3)}%${f.pressure >= 0.8 ? "!" : " "}`;
     const cost = fmtPartialCost(f.cost, f.msgs - f.unknownCost, f.unknownCost).padStart(9);
     const waste = f.wastedTurns === 0 ? "   –" : `${String(f.wastedTurns).padStart(2)}${f.wastedCost > 0 ? " " + fmtCost(f.wastedCost) : ""}`;
-    return `${shortSession(f.sessionId).padEnd(8)}  msgs ${String(f.msgs).padStart(3)}  turns ${String(f.turns).padStart(3)} (${String(f.done).padStart(3)} done)  ${fmtRate(f.avgTps).padStart(5)} t/s  tools ${(f.toolMs / 1000).toFixed(0).padStart(5)}s  ${cost}  waste ${waste}  ctx ${ctx}`;
+    return `${sessionLabel(f.sessionId, f.name).padEnd(8)}  msgs ${String(f.msgs).padStart(3)}  turns ${String(f.turns).padStart(3)} (${String(f.done).padStart(3)} done)  ${fmtRate(f.avgTps).padStart(5)} t/s  tools ${(f.toolMs / 1000).toFixed(0).padStart(5)}s  ${cost}  waste ${waste}  ctx ${ctx}`;
   });
   return "```\n" + rows.join("\n") + "\n```";
 }
@@ -332,7 +381,7 @@ function renderTools(turns: TpsTurn[], limit: number): string {
   const calls = flattenTools(turns);
   if (!calls.length) return "No tool calls logged yet.";
   const rows = calls.slice(0, limit).map(
-    (c) => `${c.ts.slice(11, 19)}  ${shortSession(c.sessionId).padEnd(8)}  #${String(c.turnIndex).padStart(3)}  ${c.name.padEnd(16)}  ${((c.durationMs / 1000).toFixed(1)).padStart(7)}s${c.isError ? "  FAIL" : ""}`,
+    (c) => `${c.ts.slice(11, 19)}  ${sessionLabel(c.sessionId, c.sessionName).padEnd(8)}  #${String(c.turnIndex).padStart(3)}  ${c.name.padEnd(16)}  ${((c.durationMs / 1000).toFixed(1)).padStart(7)}s${c.isError ? "  FAIL" : ""}`,
   );
   const totals = new Map<string, { ms: number; n: number; fails: number }>();
   for (const c of calls) {
@@ -363,7 +412,7 @@ function renderTurns(turns: TpsTurn[]): string {
     // The route is part of the number: same model, different provider, different price
     // and first-token latency (measured and published in the route matrix).
     const route = t.provider ? ` via ${t.provider}` : "";
-    return `${t.ts.slice(11, 19)} #${t.turnIndex} ${shortSession(t.sessionId)} ${shortModel(t.model).padEnd(18)}${route} | pre ${pre(t.preResponseMs)} | llm ${llm} | tools ${tools} | turn ${(t.turnMsTotal / 1000).toFixed(1)}s${gap}${mark}`;
+    return `${t.ts.slice(11, 19)} #${t.turnIndex} ${sessionLabel(t.sessionId, t.sessionName)} ${shortModel(t.model).padEnd(18)}${route} | pre ${pre(t.preResponseMs)} | llm ${llm} | tools ${tools} | turn ${(t.turnMsTotal / 1000).toFixed(1)}s${gap}${mark}`;
   });
   return "```\n" + rows.join("\n") + "\n```";
 }
@@ -375,7 +424,7 @@ function renderTable(samples: TpsSample[]): string {
     const secs = (s.durationMs / 1000).toFixed(1);
     const rate = s.streamed ? `${s.approx ? "~" : ""}${fmtRate(s.tps).padStart(5)} t/s` : "  – replay";
     const marks = `${s.status === "failed" ? " FAIL(" + s.stopReason + ")" : ""}${s.stalled ? " STALL" : ""}`;
-    return `${time}  ${shortSession(s.sessionId).padEnd(8)}  ${shortModel(s.model).padEnd(20)}  out ${String(s.output).padStart(6)}  ${secs.padStart(5)}s  ${rate}  ttft ${fmtMs(s.ttftMs).padStart(6)}  hit ${cacheHit(s).padStart(3)}${marks}`;
+    return `${time}  ${sessionLabel(s.sessionId, s.sessionName).padEnd(8)}  ${shortModel(s.model).padEnd(20)}  out ${String(s.output).padStart(6)}  ${secs.padStart(5)}s  ${rate}  ttft ${fmtMs(s.ttftMs).padStart(6)}  hit ${cacheHit(s).padStart(3)}${marks}`;
   });
   return "```\n" + rows.join("\n") + "\n```";
 }
@@ -406,6 +455,10 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
   let active: ActiveMessage | undefined;
   let turn: ActiveTurn | undefined;
   let acc: TurnLlmAcc = freshAcc();
+  // Fallback label when Pi has no session name: slug of this session's first
+  // user message, captured once per session. Reset with everything else.
+  let sessionSlug: string | undefined;
+  let slugSeen = false;
   const pressureBand = new Map<string, number>();
   const budgets = new Map<string, number>();
   const budgetBand = new Map<string, number>();
@@ -414,17 +467,20 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
 
   function renderBudget(cwd: string, sessionId: string): string {
     const budget = budgetFor(sessionId);
-    const { cost, priced, unpriced } = sessionCostUsd(readHistory(cwd, MAX_HISTORY), sessionId);
+    const history = readHistory(cwd, MAX_HISTORY);
+    const { cost, priced, unpriced } = sessionCostUsd(history, sessionId);
     const pct = budget > 0 ? Math.round((cost / budget) * 100) : 0;
     const spend = unpriced > 0 ? `${fmtCost(cost)}+` : fmtCost(cost);
     const note = unpriced > 0 ? ` (floor: ${unpricedTag(priced, unpriced)} unpriced, not counted)` : "";
-    return `💰 session ${shortSession(sessionId)} spend ${spend} of ${fmtCost(budget)} budget (${pct}%)${note}`;
+    return `💰 session ${sessionLabel(sessionId, latestName(history, sessionId))} spend ${spend} of ${fmtCost(budget)} budget (${pct}%)${note}`;
   }
 
   pi.on("session_start", () => {
     active = undefined;
     turn = undefined;
     acc = freshAcc();
+    sessionSlug = undefined;
+    slugSeen = false;
     pressureBand.clear();
     budgets.clear();
     budgetBand.clear();
@@ -434,12 +490,21 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     active = undefined;
     turn = undefined;
     acc = freshAcc();
+    sessionSlug = undefined;
+    slugSeen = false;
     pressureBand.clear();
     budgets.clear();
     budgetBand.clear();
   });
 
   pi.on("message_start", (event, ctx) => {
+    // First user message of the session: the automatic fallback label for
+    // sessions the user never named. Captured once; a Pi name at record
+    // time still wins (see labelOf below).
+    if (event.message.role === "user" && !slugSeen) {
+      slugSeen = true;
+      sessionSlug = slugOf(userTextOf(event.message as { content?: unknown }).slice(0, 200));
+    }
     if (event.message.role !== "assistant") return;
     // First assistant message of the turn: this is where the provider roundtrip
     // lands. Pi emits message_start *after* the provider responds, so the window
@@ -538,6 +603,10 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     // surface below is an actual, not an estimate; older rows without it
     // fall back to the table in models.ts.
     const actual = actualCostUsd(usage);
+    // Human label for this row: Pi's session name wins, else the slug of the
+    // session's first prompt captured above. Re-read per row — names can be
+    // set mid-session, and the newest label wins on read.
+    const label = sessionNameOf(ctx) ?? sessionSlug;
     const sample: TpsSample = {
       ts: new Date().toISOString(),
       model: ctx.model?.id ?? finished.model,
@@ -553,6 +622,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       cacheWrite: usage?.cacheWrite ?? 0,
       ...(typeof usage?.reasoning === "number" ? { reasoning: usage.reasoning } : {}),
       ...(actual !== undefined ? { costUsd: actual } : {}),
+      ...(label !== undefined ? { sessionName: label } : {}),
       streamed,
       status: failed ? "failed" : "ok",
       stopReason,
@@ -646,6 +716,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     const toolMsTotal = tools.reduce((a, t) => a + t.durationMs, 0);
     const tps = acc.streamed && acc.durationMs > 0 ? Math.round((acc.output / (acc.durationMs / 1000)) * 10) / 10 : 0;
     const decodeTps = acc.streamed ? decodeRateOf({ output: acc.output, durationMs: acc.durationMs, ttftMs: acc.ttftMs }) : UNKNOWN_TTFT;
+    const turnLabel = sessionNameOf(ctx) ?? sessionSlug;
     const row: TpsTurn = {
       ts: new Date().toISOString(),
       sessionId: sessionIdOf(ctx),
@@ -660,6 +731,8 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       // Whole-turn actual only when every message carried one; a partial sum
       // would pose as a total, so mixed turns fall back to the table estimate.
       ...(acc.messages > 0 && acc.costMessages === acc.messages ? { costUsd: acc.cost } : {}),
+      // Same label rule as the message rows: Pi name wins, else first-prompt slug.
+      ...(turnLabel !== undefined ? { sessionName: turnLabel } : {}),
       tps,
       ...(decodeTps >= 0 ? { decodeTps } : {}),
       streamed: acc.streamed,

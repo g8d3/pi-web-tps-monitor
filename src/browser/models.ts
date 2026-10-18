@@ -173,6 +173,10 @@ export function turnWaste(turns: TpsTurn[]): TurnWaste {
 
 export interface SessionStat {
   sessionId: string;
+  /** Human label: Pi's session name when set, else the first-prompt slug,
+   * taken from the latest row that carried one. Undefined when neither
+   * existed — views fall back to the 8-hex id. */
+  name?: string;
   latestTs: string;
   msgs: number;
   avgTps: number;
@@ -197,6 +201,17 @@ export interface SessionStat {
    * surface must say so rather than presenting it as the session's whole spend. */
   unpricedShare: number;
   pressure?: number;
+}
+
+export function shortSessionId(id: string): string {
+  return id ? id.slice(0, 8) : "–";
+}
+
+/** Display label for a session: the recorded human name when present, else the
+ * 8-hex id. Every view (panel tables, /tps fleet, budget line) goes through
+ * this so a named session never shows as a hash. */
+export function sessionLabel(sessionId: string, name?: string): string {
+  return typeof name === "string" && name.length > 0 ? name : shortSessionId(sessionId);
 }
 
 /** Per-session rollup across one workspace, newest activity first. */
@@ -226,9 +241,15 @@ export function fleetStats(history: TpsSample[], turns: TpsTurn[]): SessionStat[
     }
     const latest = [...samples.map((s) => s.ts), ...ts.map((t) => t.ts)].sort().at(-1) ?? "";
     const newest = [...samples].sort((a, b) => a.ts.localeCompare(b.ts)).at(-1);
+    // Latest human label wins: names can be set mid-session, so the newest
+    // row carrying one is what the user most recently called it.
+    const named = [...ts.map((t) => ({ ts: t.ts, name: t.sessionName })), ...samples.map((s) => ({ ts: s.ts, name: s.sessionName }))]
+      .filter((r) => typeof r.name === "string" && r.name.length > 0)
+      .sort((a, b) => a.ts.localeCompare(b.ts)).at(-1)?.name;
     const waste = turnWaste(ts);
     out.push({
       sessionId,
+      ...(named !== undefined ? { name: named } : {}),
       latestTs: latest,
       msgs: samples.length,
       avgTps: ms > 0 ? Math.round((outTok / (ms / 1000)) * 10) / 10 : 0,

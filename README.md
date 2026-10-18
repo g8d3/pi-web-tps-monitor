@@ -16,6 +16,8 @@ assistant message and agent turn; a PI WEB plugin renders it.
 | Chat `/tps` | `/tps [n]`, `/tps live`, `/tps totals`, `/tps models`, `/tps turns [n]`, `/tps tools [n]`, `/tps fleet`, `/tps cost`, `/tps budget [usd]` (session spend cap, default $5). Warns in chat at 80%/95% context pressure and at 80%/100% of session spend. `/tps cost` and Fleet report wasted spend (failed, aborted or empty turns, priced from turn rows). |
 
 Sessions, turns and tools link to each other inside the tab (filter/expand/jump).
+Sessions show Pi's session name when set, else a slug of the session's first
+prompt, else the 8-hex id (full id in the cell tooltip; filter matches names).
 Opening a PI WEB session or chat position from the tab needs host support that
 PI WEB's plugin API does not expose yet — the rows are ready for it.
 

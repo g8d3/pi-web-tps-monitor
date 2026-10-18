@@ -10,7 +10,7 @@ import type {
 } from "@jmfederico/pi-web/plugin-api";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsTurn } from "./protocol.js";
 
-import { contextPressure, fleetStats, fmtCost, fmtPartialCost, hasUnaccountedGap, unaccountedMs } from "./models.js";
+import { contextPressure, fleetStats, fmtCost, fmtPartialCost, hasUnaccountedGap, sessionLabel, shortSessionId, unaccountedMs } from "./models.js";
 
 const POLL_MS = 2000;
 const FETCH_STALE_MS = 1500;
@@ -112,13 +112,10 @@ function ctxCell(s: TpsSample): string {
   return `${Math.round(p * 100)}%${p >= 0.8 ? " ⚠" : ""}`;
 }
 
-function shortSession(id: string): string {
-  return id ? id.slice(0, 8) : "–";
-}
-
 interface ToolRow {
   ts: string;
   sessionId: string;
+  sessionName?: string;
   turnIndex: number;
   name: string;
   durationMs: number;
@@ -136,7 +133,7 @@ function toolRows(turns: TpsTurn[], sort: "slow" | "recent"): ToolRow[] {
   const out: ToolRow[] = [];
   for (const t of turns) {
     for (const c of t.tools) {
-      out.push({ ts: t.ts, sessionId: t.sessionId, turnIndex: t.turnIndex, name: c.name, durationMs: c.durationMs, isError: c.isError });
+      out.push({ ts: t.ts, sessionId: t.sessionId, ...(t.sessionName !== undefined ? { sessionName: t.sessionName } : {}), turnIndex: t.turnIndex, name: c.name, durationMs: c.durationMs, isError: c.isError });
     }
   }
   return sort === "slow"
@@ -253,16 +250,19 @@ const plugin: PiWebPlugin = {
               const isTools = state.view === "tools";
               // `#12` filters to one turn index; plain text matches model/session/tool.
               const turnNum = q.startsWith("#") ? parseInt(q.slice(1), 10) : NaN;
-              const gotoSession = (id: string): void => {
-                state.filter = shortSession(id);
+              const gotoSession = (id: string, name?: string): void => {
+                state.filter = name ?? shortSessionId(id);
                 state.page = 0;
                 context.host.requestRender();
               };
+              // Plain text matches model, session name/id or tool.
+              const matchSession = (id: string, name: string | undefined): boolean =>
+                id.toLowerCase().startsWith(q) || (name !== undefined && name.toLowerCase().includes(q));
               const isFleet = state.view === "fleet";
               const listedMsgs = isTurns || isTools || isFleet
                 ? []
                 : state.history.filter(
-                    (s) => !q || s.model.toLowerCase().includes(q) || s.sessionId.toLowerCase().startsWith(q),
+                    (s) => !q || s.model.toLowerCase().includes(q) || matchSession(s.sessionId, s.sessionName),
                   );
               const listedTurns = isTurns
                 ? state.turns.filter(
@@ -270,14 +270,14 @@ const plugin: PiWebPlugin = {
                       (!Number.isNaN(turnNum) && t.turnIndex === turnNum) ||
                       (!q ||
                         t.model.toLowerCase().includes(q) ||
-                        t.sessionId.toLowerCase().startsWith(q) ||
+                        matchSession(t.sessionId, t.sessionName) ||
                         t.tools.some((c) => c.name.toLowerCase().includes(q))),
                   )
                 : [];
               const allToolRows = isTools ? toolRows(state.turns, state.toolSort) : [];
-              const fleet = isFleet ? fleetStats(state.history, state.turns).filter((f) => !q || f.sessionId.toLowerCase().startsWith(q)) : [];
+              const fleet = isFleet ? fleetStats(state.history, state.turns).filter((f) => !q || matchSession(f.sessionId, f.name)) : [];
               const listedTools = allToolRows.filter(
-                (r) => !q || r.name.toLowerCase().includes(q) || r.sessionId.toLowerCase().startsWith(q),
+                (r) => !q || r.name.toLowerCase().includes(q) || matchSession(r.sessionId, r.sessionName),
               );
               const listedCount = isTurns ? listedTurns.length : isTools ? listedTools.length : isFleet ? fleet.length : listedMsgs.length;
               const pages = Math.max(1, Math.ceil(listedCount / PAGE_SIZE));
@@ -364,7 +364,7 @@ const plugin: PiWebPlugin = {
                                 <td>${clock(t.ts)}</td>
                                 <td>#${t.turnIndex}</td>
                                 <td class="tps-narrow-hide">${t.llmMessages}</td>
-                                <td class="tps-narrow-hide"><button @click=${() => { gotoSession(t.sessionId); }} title="Show only this session">${shortSession(t.sessionId)}</button></td>
+                                <td class="tps-narrow-hide"><button @click=${() => { gotoSession(t.sessionId, t.sessionName); }} title=${t.sessionId}>${sessionLabel(t.sessionId, t.sessionName)}</button></td>
                                 <td>${t.streamed ? html`${(t.llmDurationMs / 1000).toFixed(1)}s` : html`–`}</td>
                                 <td class="tps-narrow-hide" title="turn_start → first assistant message_start: the provider roundtrip window (the tax the stream clock cannot see)">${preResp(t.preResponseMs)}</td>
                                 <td>${t.streamed ? html`${fmtRate(t.tps)}` : html`–`}</td>
@@ -412,7 +412,7 @@ const plugin: PiWebPlugin = {
                               (r) => html`<tr>
                                 <td>${r.isError ? "✗" : ""}</td>
                                 <td>${clock(r.ts)}</td>
-                                <td class="tps-narrow-hide"><button @click=${() => { gotoSession(r.sessionId); }} title="Show only this session">${shortSession(r.sessionId)}</button></td>
+                                <td class="tps-narrow-hide"><button @click=${() => { gotoSession(r.sessionId, r.sessionName); }} title=${r.sessionId}>${sessionLabel(r.sessionId, r.sessionName)}</button></td>
                                 <td>#${r.turnIndex}</td>
                                 <td><button @click=${() => {
                                   state.view = "turns";
@@ -431,7 +431,7 @@ const plugin: PiWebPlugin = {
                       <tbody>
                         ${visibleF.map(
                           (f) => html`<tr>
-                            <td><button @click=${() => { gotoSession(f.sessionId); }} title="Show only this session">${shortSession(f.sessionId)}</button></td>
+                            <td><button @click=${() => { gotoSession(f.sessionId, f.name); }} title=${f.sessionId}>${sessionLabel(f.sessionId, f.name)}</button></td>
                             <td>${f.msgs}</td>
                             <td>${f.turns}</td>
                             <td>${f.done}</td>
@@ -451,7 +451,7 @@ const plugin: PiWebPlugin = {
                           (s) => html`<tr title=${titleOf(s)}>
                             <td>${markOf(s)}</td>
                             <td>${clock(s.ts)}</td>
-                            <td class="tps-narrow-hide"><button @click=${() => { gotoSession(s.sessionId); }} title="Show only this session">${shortSession(s.sessionId)}</button></td>
+                            <td class="tps-narrow-hide"><button @click=${() => { gotoSession(s.sessionId, s.sessionName); }} title=${s.sessionId}>${sessionLabel(s.sessionId, s.sessionName)}</button></td>
                             <td class="tps-model">${shortModel(s.model)}</td>
                             <td>${s.output}</td>
                             <td class="tps-narrow-hide">${(s.durationMs / 1000).toFixed(1)}</td>

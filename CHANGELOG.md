@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.10.9 — sessions have human names
+
+Fleet, Messages, Turns, Tools and `/tps fleet` showed raw 8-hex session ids.
+Each sample and turn row now carries a human label recorded at write time:
+Pi's session name when the session was renamed, else a slug of the session's
+first user prompt (`fix-fleet-cost-table`, ≤40 chars), else nothing and the
+views fall back to the hash. Full ids stay in the cell tooltips and the
+filter matches names as well as id prefixes. `test/session-label.test.mjs`
+pins it: Pi name wins over slug, slug appears with no Pi name, rows stay
+anonymous with neither, fleet/budget print the label. All 67 tests pass.
+
 ## v0.10.8 — the turn row says which route served it
 
 The same model on a different provider has a different price and a different first-token
