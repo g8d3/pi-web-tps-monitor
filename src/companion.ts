@@ -82,6 +82,9 @@ interface TurnLlmAcc {
   streamed: boolean;
   approx: boolean;
   model: string;
+  /** Provider that served the turn's messages (e.g. "opencode-go"). Same model, different
+   * route, different price and latency — see the published route matrix. */
+  provider?: string;
   requested: number;
 }
 
@@ -357,7 +360,10 @@ function renderTurns(turns: TpsTurn[]): string {
       : t.requestedTools > 0 ? `– (${t.requestedTools} requested, none ran)` : "–";
     const gap = hasUnaccountedGap(t) ? ` +${(unaccountedMs(t) / 1000).toFixed(1)}s?` : "";
     const mark = t.outcome !== "completed" ? ` ${t.outcome.toUpperCase()}` : "";
-    return `${t.ts.slice(11, 19)} #${t.turnIndex} ${shortSession(t.sessionId)} ${shortModel(t.model).padEnd(18)} | pre ${pre(t.preResponseMs)} | llm ${llm} | tools ${tools} | turn ${(t.turnMsTotal / 1000).toFixed(1)}s${gap}${mark}`;
+    // The route is part of the number: same model, different provider, different price
+    // and first-token latency (measured and published in the route matrix).
+    const route = t.provider ? ` via ${t.provider}` : "";
+    return `${t.ts.slice(11, 19)} #${t.turnIndex} ${shortSession(t.sessionId)} ${shortModel(t.model).padEnd(18)}${route} | pre ${pre(t.preResponseMs)} | llm ${llm} | tools ${tools} | turn ${(t.turnMsTotal / 1000).toFixed(1)}s${gap}${mark}`;
   });
   return "```\n" + rows.join("\n") + "\n```";
 }
@@ -610,6 +616,10 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       acc.approx = acc.approx || sample.approx;
       if (acc.ttftMs === UNKNOWN_TTFT && sample.ttftMs >= 0) acc.ttftMs = sample.ttftMs;
       acc.model = sample.model;
+      // The provider is part of the measurement: the same model on another route has a
+      // different price and a different first-token latency (measured, published).
+      const servedBy = (event.message as { provider?: unknown }).provider;
+      if (typeof servedBy === "string" && servedBy) acc.provider = servedBy;
       acc.requested += countRequestedTools(event.message);
     }
   });
@@ -640,6 +650,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       ts: new Date().toISOString(),
       sessionId: sessionIdOf(ctx),
       model: acc.messages > 0 ? acc.model : (ctx.model?.id ?? "unknown"),
+      ...(acc.provider ? { provider: acc.provider } : {}),
       turnIndex: turn?.index ?? event.turnIndex,
       llmDurationMs: acc.durationMs,
       ...(turn?.preResponseMs !== undefined ? { preResponseMs: turn.preResponseMs } : {}),

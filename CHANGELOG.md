@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.10.8 — the turn row says which route served it
+
+The same model on a different provider has a different price and a different first-token
+latency — measured on the providers we hold keys for and published at
+<https://focalis.cc/audit/routes/> (input price up to 20.5x apart for one model; the cheapest
+route 5.7x slower to first token than the fastest on another). Until now the monitor recorded
+the model but not the route, so a panel could not tell `deepseek-v4.1-flash` served by
+`opencode-go` from the same model served by `openrouter`.
+
+Now every turn row carries `provider` (from the assistant message's own `provider` field),
+`/tps turns` prints `… via <provider> …`, and the panel's Turns row tooltip names the model and
+the route. Rows written before this version have no `provider` and render exactly as before.
+`test/provider.test.mjs` pins the three shapes: recorded, absent (pre-v0.10.8), and rejected
+when it is not a string.
+
 ## v0.10.7 — cost is the billed number, ctx windows match the registry
 
 Fleet cost, `/tps cost`, `/tps fleet` and the budget guardrail used to

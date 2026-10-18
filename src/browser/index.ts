@@ -359,7 +359,7 @@ const plugin: PiWebPlugin = {
                                 state.expanded = open ? state.expanded.filter((k) => k !== key) : [...state.expanded, key];
                                 context.host.requestRender();
                               }}>${open ? "–" : "+"}</button>`;
-                              const row = html`<tr title=${t.tools.map((c) => `${c.name} ${(c.durationMs / 1000).toFixed(1)}s${c.isError ? " ✗" : ""}`).join(", ") || "no tool calls"}>
+                              const row = html`<tr title=${`${t.model}${t.provider ? ` via ${t.provider}` : ""}${t.tools.length ? " · " : ""}` + (t.tools.map((c) => `${c.name} ${(c.durationMs / 1000).toFixed(1)}s${c.isError ? " ✗" : ""}`).join(", ") || "no tool calls")}>
                                 <td>${t.outcome === "completed" ? toggle : html`✗ ${toggle}`}</td>
                                 <td>${clock(t.ts)}</td>
                                 <td>#${t.turnIndex}</td>

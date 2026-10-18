@@ -35,6 +35,11 @@ export interface TpsSample {
   status: "ok" | "failed";
   stopReason: string;
   sessionId: string;
+  /** Human label captured at record time: Pi's session name when set, else an
+   * auto-slug of the session's first user message. Absent when neither
+   * existed — views fall back to the 8-hex id. Per-row because names can
+   * change mid-session. */
+  sessionName?: string;
 }
 
 export interface TpsToolCall {
@@ -49,6 +54,10 @@ export interface TpsTurn {
   ts: string;
   sessionId: string;
   model: string;
+  /** Provider that served this turn's messages (e.g. "opencode-go"). Absent on pre-v24
+   * rows. The route is part of the cost: the same model costs different amounts and
+   * answers at different first-token latencies depending on where it enters. */
+  provider?: string;
   turnIndex: number;
   llmDurationMs: number;
   ttftMs: number;
@@ -75,6 +84,8 @@ export interface TpsTurn {
   requestedTools: number;
   /** Assistant messages folded into this turn's LLM slice. */
   llmMessages: number;
+  /** Same human label as the sample rows (see above). */
+  sessionName?: string;
 }
 
 export interface TpsLive {
@@ -117,7 +128,8 @@ export function isTpsSample(v: unknown): v is TpsSample {
     (v.streamed === undefined || typeof v.streamed === "boolean") &&
     (v.status === undefined || v.status === "ok" || v.status === "failed") &&
     (v.stopReason === undefined || typeof v.stopReason === "string") &&
-    (v.sessionId === undefined || typeof v.sessionId === "string")
+    (v.sessionId === undefined || typeof v.sessionId === "string") &&
+    (v.sessionName === undefined || typeof v.sessionName === "string")
   );
 }
 
@@ -160,6 +172,7 @@ export function normalizeSample(v: unknown): TpsSample | undefined {
     cacheWrite: v.cacheWrite ?? 0,
     ...(typeof v.reasoning === "number" ? { reasoning: v.reasoning } : {}),
     ...(typeof v.costUsd === "number" ? { costUsd: v.costUsd } : {}),
+    ...(typeof v.sessionName === "string" ? { sessionName: v.sessionName } : {}),
     streamed,
     status: v.status === "failed" ? "failed" : "ok",
     stopReason: typeof v.stopReason === "string" ? v.stopReason : "",
@@ -195,7 +208,9 @@ export function isTpsTurn(v: unknown): v is TpsTurn {
   if (typeof v.llmMessages !== "undefined" && typeof v.llmMessages !== "number") return false;
   if (typeof v.decodeTps !== "undefined" && typeof v.decodeTps !== "number") return false;
   if (typeof v.preResponseMs !== "undefined" && typeof v.preResponseMs !== "number") return false;
+  if (typeof v.provider !== "undefined" && typeof v.provider !== "string") return false;
   if (typeof v.costUsd !== "undefined" && typeof v.costUsd !== "number") return false;
+  if (typeof v.sessionName !== "undefined" && typeof v.sessionName !== "string") return false;
   return true;
 }
 

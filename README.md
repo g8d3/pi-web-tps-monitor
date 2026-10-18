@@ -81,6 +81,10 @@ Contact: **hola@focalis.cc**.
   unpriced shows `–` rather than a number, because `$0.00` would read as "free".
 - **The budget guardrail is a floor too**, for the same reason: it warns off the
   priced part of your spend and tells you what share it left out.
+- **The route is in the row.** Every turn records the `provider` that served it
+  (`… via opencode-go` in `/tps turns`, named in the panel's row tooltip), because the same
+  model costs different amounts and answers at different speeds depending on where it enters —
+  measured in the published route matrix: <https://focalis.cc/audit/routes/>.
 - **Dec vs blended t/s.** `Dec` is decode tok/s — generation speed measured from
   the first token onward, so a slow provider is not scored as a slow decoder.
   Without `Dec` the rate is blended and includes time-to-first-token.
