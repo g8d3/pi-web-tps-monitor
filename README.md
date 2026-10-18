@@ -77,11 +77,15 @@ own data. We mention it here because it is the same standard this README is held
 **The file this plugin writes is the input to a free self-serve preview**: drop your
 `<workspace>/.pi-web/tps-turns.jsonl` into <https://focalis.cc/audit/preview/> and it
 decomposes the turns in your browser (pre-response, stream, tools, residual, tail,
-wasted turns) and uploads nothing. If you want the part the file cannot see — the process
+wasted turns) and uploads nothing. It also matches the model names in your file against
+the route matrix we measure (<https://focalis.cc/audit/routes/>) and tells you, per model,
+whether the same one is sold on another route we measured and how far its price and its
+first token move — including the cases where the list price is identical on both routes
+and only the latency differs. If you want the part the file cannot see — the process
 boot before the first event, and a before/after series on your own loops — that is the
 audit: what to send is at <https://focalis.cc/audit/intake/>.
 
-Contact: **hola@focalis.cc**.
+Contact: **hello@focalis.cc**.
 
 ## Reading the numbers
 
