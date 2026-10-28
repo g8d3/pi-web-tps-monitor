@@ -185,6 +185,7 @@ const plugin: PiWebPlugin = {
     const states = new Map<string, PanelState>();
     const hosts = new Set<WorkspacePanelHost>();
     const channels = new Map<string, { close: () => void }>();
+    const opening = new Set<string>();
     let disposed = false;
     const timer = setInterval(() => {
       for (const host of hosts) {
@@ -260,7 +261,8 @@ const plugin: PiWebPlugin = {
      * fresh rows; polling below becomes the fallback. Refresh stays manual. */
     async function openWatch(context: WorkspacePanelContext, state: PanelState, key: string): Promise<void> {
       const peer = context.peer;
-      if (!peer || typeof peer.openChannel !== "function" || channels.has(key)) return;
+      if (!peer || typeof peer.openChannel !== "function" || channels.has(key) || opening.has(key)) return;
+      opening.add(key);
       const ctrl = new AbortController();
       try {
         const ch = await peer.openChannel("watch", { limit: HISTORY_LIMIT }, {
@@ -301,6 +303,8 @@ const plugin: PiWebPlugin = {
         void ch.closed.then(done, done);
       } catch {
         // host without channels (or watch unsupported): polling covers it.
+      } finally {
+        opening.delete(key);
       }
     }
 
