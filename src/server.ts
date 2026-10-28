@@ -139,7 +139,7 @@ const plugin = {
               const snap = snapshot(root, { limit: cap });
               track(snap.history);
               track(snap.turns);
-              context.send(toJson({ type: "snapshot-start", live: snap.live }));
+              context.send(toJson({ type: "snapshot-start", live: snap.live, historyTotal: snap.history.length, turnsTotal: snap.turns.length }));
               for (let i = 0; i < snap.history.length; i += CHUNK) {
                 context.send(toJson({ type: "snapshot-part", kind: "history", rows: snap.history.slice(i, i + CHUNK) }));
               }

@@ -222,13 +222,21 @@ const plugin: PiWebPlugin = {
       live: unknown;
       history: unknown[];
       turns: unknown[];
+      historyTotal: number;
+      turnsTotal: number;
     }
     const accumulators = new Map<string, Accumulating>();
 
     function onFrame(key: string, state: PanelState, context: WorkspacePanelContext, data: unknown): void {
       const f = data as { type?: unknown; live?: unknown; history?: unknown; turns?: unknown; kind?: unknown; rows?: unknown };
       if (f.type === "snapshot-start") {
-        accumulators.set(key, { live: f.live, history: [], turns: [] });
+        accumulators.set(key, {
+          live: f.live,
+          history: [],
+          turns: [],
+          historyTotal: typeof f.historyTotal === "number" ? f.historyTotal : 0,
+          turnsTotal: typeof f.turnsTotal === "number" ? f.turnsTotal : 0,
+        });
         return;
       }
       if (f.type === "snapshot-part") {
@@ -242,7 +250,14 @@ const plugin: PiWebPlugin = {
         const acc = accumulators.get(key);
         accumulators.delete(key);
         if (!acc) return;
-        applySnapshot(state, acc.live, acc.history, acc.turns);
+        // Frames can arrive out of order or get dropped: never let a partial
+        // snapshot clobber good state. Incomplete → force a full fetch instead.
+        if (acc.history.length >= acc.historyTotal && acc.turns.length >= acc.turnsTotal) {
+          applySnapshot(state, acc.live, acc.history, acc.turns);
+        } else {
+          state.lastFetch = 0;
+          void fetchState(context, state);
+        }
         state.livePush = true;
         if (!disposed) context.host.requestRender();
         return;
