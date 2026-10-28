@@ -228,7 +228,7 @@ const plugin: PiWebPlugin = {
     const accumulators = new Map<string, Accumulating>();
 
     function onFrame(key: string, state: PanelState, context: WorkspacePanelContext, data: unknown): void {
-      const f = data as { type?: unknown; live?: unknown; history?: unknown; turns?: unknown; kind?: unknown; rows?: unknown };
+      const f = data as { type?: unknown; live?: unknown; history?: unknown; turns?: unknown; kind?: unknown; rows?: unknown; historyTotal?: unknown; turnsTotal?: unknown };
       if (f.type === "snapshot-start") {
         accumulators.set(key, {
           live: f.live,
