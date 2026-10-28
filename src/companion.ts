@@ -6,11 +6,12 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { decodeRateOf, isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
-import { contextPressure, fleetStats, fmtCost, fmtPartialCost, fmtLimit, hasUnaccountedGap, modelInfo, sampleCostOf, sessionCostUsd, sessionLabel, turnWaste, unaccountedMs, unpricedTag } from "./browser/models.js";
+import { contextPressure, fleetStats, fmtCost, fmtDur, fmtPartialCost, fmtLimit, hasUnaccountedGap, modelInfo, perModelCost, sampleCostOf, sessionCostUsd, sessionLabel, turnWaste, unaccountedMs, unpricedTag } from "./browser/models.js";
 
 const HISTORY_FILE = ".pi-web/tps-history.jsonl";
 const TURNS_FILE = ".pi-web/tps-turns.jsonl";
 const LIVE_FILE = ".pi-web/tps-live.json";
+const BUDGETS_FILE = ".pi-web/tps-budgets.json";
 const STATUS_KEY = "tps-monitor";
 const CHARS_PER_TOKEN = 4;
 const LIVE_THROTTLE_MS = 500;
@@ -29,6 +30,9 @@ interface ActiveMessage {
   startedAt: number;
   chars: number;
   deltas: number;
+  /** Streamed tool-call chunks (toolcall_start/delta): evidence the provider
+   * is generating, even when the turn streams no text (TPS-01). */
+  toolDeltas: number;
   model: string;
   lastWrite: number;
   firstTokenAt?: number;
@@ -94,7 +98,7 @@ const SLUG_MAX = 40;
 export function slugOf(text: string): string | undefined {
   const slug = text
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, SLUG_MAX)
     .replace(/-+$/g, "");
@@ -293,6 +297,32 @@ function rateable(samples: TpsSample[]): TpsSample[] {
   return samples.filter((s) => s.streamed && s.status === "ok");
 }
 
+/** One-line summary of a tool call's arguments for the Tools view (TPS-36).
+ * bash-like tools show the command head; everything else gets compact JSON. */
+export function summarizeArgs(name: string, args: unknown): string | undefined {
+  if (typeof args !== "object" || args === null) return undefined;
+  const rec = args as Record<string, unknown>;
+  const cmd = rec.command;
+  if ((name === "bash" || name === "exec" || name === "shell") && typeof cmd === "string") {
+    const head = cmd.replace(/\s+/g, " ").trim().slice(0, 60);
+    return head.length > 0 ? head : undefined;
+  }
+  // Most useful single string field wins (file path, pattern, url …).
+  for (const key of ["path", "file", "pattern", "url", "prompt", "input", "query"]) {
+    const v = rec[key];
+    if (typeof v === "string" && v.trim().length > 0) {
+      const head = v.replace(/\s+/g, " ").trim().slice(0, 60);
+      if (head.length > 0) return head;
+    }
+  }
+  try {
+    const flat = JSON.stringify(args).replace(/\s+/g, " ").slice(0, 60);
+    return flat.length > 2 ? flat : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 interface FlatTool {
   ts: string;
   sessionId: string;
@@ -301,13 +331,14 @@ interface FlatTool {
   name: string;
   durationMs: number;
   isError: boolean;
+  detail?: string;
 }
 
 export function flattenTools(turns: TpsTurn[]): FlatTool[] {
   const out: FlatTool[] = [];
   for (const t of turns) {
     for (const c of t.tools) {
-      out.push({ ts: t.ts, sessionId: t.sessionId, ...(t.sessionName !== undefined ? { sessionName: t.sessionName } : {}), turnIndex: t.turnIndex, name: c.name, durationMs: c.durationMs, isError: c.isError });
+      out.push({ ts: t.ts, sessionId: t.sessionId, ...(t.sessionName !== undefined ? { sessionName: t.sessionName } : {}), turnIndex: t.turnIndex, name: c.name, durationMs: c.durationMs, isError: c.isError, ...(c.detail !== undefined ? { detail: c.detail } : {}) });
     }
   }
   return out.sort((a, b) => b.durationMs - a.durationMs);
@@ -326,8 +357,10 @@ function renderFleet(history: TpsSample[], turns: TpsTurn[]): string {
   const rows = stats.map((f) => {
     const ctx = f.pressure === undefined ? "   –" : `${String(Math.round(f.pressure * 100)).padStart(3)}%${f.pressure >= 0.8 ? "!" : " "}`;
     const cost = fmtPartialCost(f.cost, f.msgs - f.unknownCost, f.unknownCost).padStart(9);
-    const waste = f.wastedTurns === 0 ? "   –" : `${String(f.wastedTurns).padStart(2)}${f.wastedCost > 0 ? " " + fmtCost(f.wastedCost) : ""}`;
-    return `${sessionLabel(f.sessionId, f.name).padEnd(8)}  msgs ${String(f.msgs).padStart(3)}  turns ${String(f.turns).padStart(3)} (${String(f.done).padStart(3)} done)  ${fmtRate(f.avgTps).padStart(5)} t/s  tools ${(f.toolMs / 1000).toFixed(0).padStart(5)}s  ${cost}  waste ${waste}  ctx ${ctx}`;
+    const waste = f.wastedTurns === 0 ? "   –" : `${String(f.wastedTurns).padStart(2)}${f.wastedCost > 0 ? " " + fmtCost(f.wastedCost) : " unpriced"}`;
+    // Working time (LLM + tools) vs elapsed wall span (first → last activity).
+    const spanMs = f.latestTs >= f.earliestTs && f.latestTs !== "" ? Date.parse(f.latestTs) - Date.parse(f.earliestTs) : 0;
+    return `${sessionLabel(f.sessionId, f.name).padEnd(8)}  msgs ${String(f.msgs).padStart(3)}  turns ${String(f.turns).padStart(3)} (${String(f.done).padStart(3)} completed)  avg ${fmtRate(f.avgTps).padStart(5)} t/s  llm+tools ${fmtDur(f.llmMs + f.toolMs).padStart(6)} / span ${fmtDur(spanMs).padStart(6)}  ${cost}  waste ${waste}  ctx ${ctx}`;
   });
   return "```\n" + rows.join("\n") + "\n```";
 }
@@ -374,6 +407,23 @@ function renderCost(history: TpsSample[], turns: TpsTurn[]): string {
     lines.push(`est ${fmtCost(cost)} across ${priced} of ${history.length} messages${unpriced > 0 ? ` (${unpricedTag(priced, unpriced)} — cost is a floor)` : ""}${per}`);
   }
   lines.push(`${turns.length} turns, ${done} completed${wasted}`);
+  // Per-model cost split for mixed-model sessions (TPS-39).
+  const byModel = new Map<string, { cost: number; priced: number; unpriced: number }>();
+  for (const s of history) {
+    const c = sampleCostOf(s);
+    const e = byModel.get(s.model) ?? { cost: 0, priced: 0, unpriced: 0 };
+    if (c === undefined) e.unpriced += 1;
+    else {
+      e.cost += c;
+      e.priced += 1;
+    }
+    byModel.set(s.model, e);
+  }
+  if (byModel.size > 1) {
+    for (const [model, e] of [...byModel.entries()].sort((a, b) => b[1].cost - a[1].cost)) {
+      lines.push(`  ${shortModel(model).padEnd(18)} ${e.priced + e.unpriced} msgs  ${e.priced > 0 ? fmtCost(e.cost) : "– unpriced"}`);
+    }
+  }
   return lines.join("\n");
 }
 
@@ -381,7 +431,7 @@ function renderTools(turns: TpsTurn[], limit: number): string {
   const calls = flattenTools(turns);
   if (!calls.length) return "No tool calls logged yet.";
   const rows = calls.slice(0, limit).map(
-    (c) => `${c.ts.slice(11, 19)}  ${sessionLabel(c.sessionId, c.sessionName).padEnd(8)}  #${String(c.turnIndex).padStart(3)}  ${c.name.padEnd(16)}  ${((c.durationMs / 1000).toFixed(1)).padStart(7)}s${c.isError ? "  FAIL" : ""}`,
+    (c) => `${c.ts.slice(11, 19)}  ${sessionLabel(c.sessionId, c.sessionName).padEnd(8)}  #${String(c.turnIndex).padStart(3)}  ${c.name.padEnd(16)}  ${fmtDur(c.durationMs).padStart(7)}${c.isError ? "  FAIL" : ""}${c.detail !== undefined ? `  ${c.detail.slice(0, 60)}` : ""}`,
   );
   const totals = new Map<string, { ms: number; n: number; fails: number }>();
   for (const c of calls) {
@@ -392,7 +442,7 @@ function renderTools(turns: TpsTurn[], limit: number): string {
     totals.set(c.name, t);
   }
   const top = [...totals.entries()].sort((a, b) => b[1].ms - a[1].ms).slice(0, 8);
-  const foot = top.map(([name, t]) => `${name.padEnd(16)}  ${String(t.n).padStart(3)} calls  ${(t.ms / 1000).toFixed(1).padStart(7)}s total${t.fails ? `  ${t.fails} fails` : ""}`);
+  const foot = top.map(([name, t]) => `${name.padEnd(16)}  ${String(t.n).padStart(3)} calls  ${fmtDur(t.ms).padStart(7)} total${t.fails ? `  ${t.fails} fails` : ""}`);
   return "```\n" + rows.join("\n") + "\n--- most expensive tools ---\n" + foot.join("\n") + "\n```";
 }
 
@@ -402,17 +452,20 @@ function renderTurns(turns: TpsTurn[]): string {
   const pre = (ms?: number) => (ms && ms > 0 ? fmtMs(ms) : "–");
   const rows = turns.map((t) => {
     const msgs = t.llmMessages > 1 ? ` (${t.llmMessages} msgs)` : "";
-    const llm = t.streamed ? `${(t.llmDurationMs / 1000).toFixed(1)}s ${fmtRate(t.tps)}t/s ttft ${fmtMs(t.ttftMs)}${msgs}` : "– replay";
+    // LLM seconds always shown; only the rate is withheld when unrated (TPS-07).
+    const llm = t.streamed ? `${fmtDur(t.llmDurationMs)} ${fmtRate(t.tps)}t/s ttft ${fmtMs(t.ttftMs)}${msgs}` : `${fmtDur(t.llmDurationMs)} unrated${msgs}`;
     const missing = t.requestedTools > t.tools.length ? ` (${t.tools.length}/${t.requestedTools} ran)` : "";
     const tools = t.tools.length
-      ? `${t.tools.length} (${t.tools.slice(0, 3).map((c) => `${c.name}${c.isError ? "✗" : ""}`).join(",")}${t.tools.length > 3 ? `+${t.tools.length - 3}` : ""} ${(t.toolMsTotal / 1000).toFixed(1)}s)${missing}`
+      ? `${t.tools.length} (${t.tools.slice(0, 3).map((c) => `${c.name}${c.isError ? "✗" : ""}`).join(",")}${t.tools.length > 3 ? `+${t.tools.length - 3}` : ""} ${fmtDur(t.toolMsTotal)})${missing}`
       : t.requestedTools > 0 ? `– (${t.requestedTools} requested, none ran)` : "–";
-    const gap = hasUnaccountedGap(t) ? ` +${(unaccountedMs(t) / 1000).toFixed(1)}s?` : "";
+    // Total is wall-clock: print the decomposition so it always adds up (TPS-34).
+    const gapMs = unaccountedMs(t);
+    const gap = hasUnaccountedGap(t) ? ` [${fmtDur(t.llmDurationMs)}+${fmtDur(t.toolMsTotal)}+${pre(t.preResponseMs)}+gap ${fmtDur(gapMs)}]` : "";
     const mark = t.outcome !== "completed" ? ` ${t.outcome.toUpperCase()}` : "";
     // The route is part of the number: same model, different provider, different price
     // and first-token latency (measured and published in the route matrix).
     const route = t.provider ? ` via ${t.provider}` : "";
-    return `${t.ts.slice(11, 19)} #${t.turnIndex} ${sessionLabel(t.sessionId, t.sessionName)} ${shortModel(t.model).padEnd(18)}${route} | pre ${pre(t.preResponseMs)} | llm ${llm} | tools ${tools} | turn ${(t.turnMsTotal / 1000).toFixed(1)}s${gap}${mark}`;
+    return `${t.ts.slice(11, 19)} #${t.turnIndex} ${sessionLabel(t.sessionId, t.sessionName)} ${shortModel(t.model).padEnd(18)}${route} | pre ${pre(t.preResponseMs)} | llm ${llm} | tools ${tools} | turn ${fmtDur(t.turnMsTotal)}${gap}${mark}`;
   });
   return "```\n" + rows.join("\n") + "\n```";
 }
@@ -421,10 +474,10 @@ function renderTable(samples: TpsSample[]): string {
   if (!samples.length) return "No samples yet. Ask something so the model streams a reply.";
   const rows = samples.map((s) => {
     const time = s.ts.slice(11, 19);
-    const secs = (s.durationMs / 1000).toFixed(1);
     const rate = s.streamed ? `${s.approx ? "~" : ""}${fmtRate(s.tps).padStart(5)} t/s` : "  – replay";
     const marks = `${s.status === "failed" ? " FAIL(" + s.stopReason + ")" : ""}${s.stalled ? " STALL" : ""}`;
-    return `${time}  ${sessionLabel(s.sessionId, s.sessionName).padEnd(8)}  ${shortModel(s.model).padEnd(20)}  out ${String(s.output).padStart(6)}  ${secs.padStart(5)}s  ${rate}  ttft ${fmtMs(s.ttftMs).padStart(6)}  hit ${cacheHit(s).padStart(3)}${marks}`;
+    const turn = s.turnIndex !== undefined ? `#${String(s.turnIndex).padStart(3)}` : "   –";
+    return `${time}  ${turn}  ${sessionLabel(s.sessionId, s.sessionName).padEnd(8)}  ${shortModel(s.model).padEnd(20)}  out ${String(s.output).padStart(6)}  ${fmtDur(s.durationMs).padStart(7)}  ${rate}  ttft ${fmtMs(s.ttftMs).padStart(6)}  hit ${cacheHit(s).padStart(3)}${marks}`;
   });
   return "```\n" + rows.join("\n") + "\n```";
 }
@@ -455,6 +508,9 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
   let active: ActiveMessage | undefined;
   let turn: ActiveTurn | undefined;
   let acc: TurnLlmAcc = freshAcc();
+  /** Short arg summaries captured at tool start (which carries `args`),
+   * keyed by toolCallId, attached to the record at tool end (TPS-36). */
+  const pendingDetails = new Map<string, string>();
   // Fallback label when Pi has no session name: slug of this session's first
   // user message, captured once per session. Reset with everything else.
   let sessionSlug: string | undefined;
@@ -463,10 +519,40 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
   const budgets = new Map<string, number>();
   const budgetBand = new Map<string, number>();
 
-  const budgetFor = (sessionId: string): number => budgets.get(sessionId) ?? DEFAULT_BUDGET_USD;
+  /** Budget caps survive restarts: the whole map is mirrored to disk on every
+   * set and reloaded on first use per cwd (TPS-04). History-backed spend
+   * already survived; the cap was the amnesiac part. */
+  const loadBudgets = (cwd: string): void => {
+    try {
+      const raw: unknown = JSON.parse(readFileSync(join(cwd, BUDGETS_FILE), "utf8"));
+      if (typeof raw === "object" && raw !== null) {
+        for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+          if (typeof v === "number" && Number.isFinite(v) && v > 0) budgets.set(k, v);
+        }
+      }
+    } catch {
+      // no saved budgets yet
+    }
+  };
+  let budgetsLoadedFor: string | undefined;
+  const saveBudgets = (cwd: string): void => {
+    try {
+      ensureDir(cwd);
+      writeFileSync(join(cwd, BUDGETS_FILE), JSON.stringify(Object.fromEntries(budgets)));
+    } catch {
+      // best-effort: in-memory cap still applies this session
+    }
+  };
+  const budgetFor = (cwd: string, sessionId: string): number => {
+    if (budgetsLoadedFor !== cwd) {
+      budgetsLoadedFor = cwd;
+      loadBudgets(cwd);
+    }
+    return budgets.get(sessionId) ?? DEFAULT_BUDGET_USD;
+  };
 
   function renderBudget(cwd: string, sessionId: string): string {
-    const budget = budgetFor(sessionId);
+    const budget = budgetFor(cwd, sessionId);
     const history = readHistory(cwd, MAX_HISTORY);
     const { cost, priced, unpriced } = sessionCostUsd(history, sessionId);
     const pct = budget > 0 ? Math.round((cost / budget) * 100) : 0;
@@ -479,10 +565,10 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     active = undefined;
     turn = undefined;
     acc = freshAcc();
+    pendingDetails.clear();
     sessionSlug = undefined;
     slugSeen = false;
     pressureBand.clear();
-    budgets.clear();
     budgetBand.clear();
   });
 
@@ -490,10 +576,12 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     active = undefined;
     turn = undefined;
     acc = freshAcc();
+    pendingDetails.clear();
     sessionSlug = undefined;
     slugSeen = false;
     pressureBand.clear();
     budgets.clear();
+    budgetsLoadedFor = undefined;
     budgetBand.clear();
   });
 
@@ -516,6 +604,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       startedAt: Date.now(),
       chars: 0,
       deltas: 0,
+      toolDeltas: 0,
       model: ctx.model?.id ?? "unknown",
       lastWrite: 0,
       stalled: false,
@@ -533,9 +622,19 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
   pi.on("message_update", (event, ctx) => {
     if (!active || event.message.role !== "assistant") return;
     const e = event.assistantMessageEvent;
-    if (e.type !== "text_delta" && e.type !== "thinking_delta") return;
-    active.chars += e.delta.length;
-    active.deltas += 1;
+    // Tool-call streaming is generation too: a turn that streams only tool
+    // calls (no text) is still live provider output, not a replay (TPS-01).
+    if (e.type === "toolcall_start" || e.type === "toolcall_delta" || e.type === "toolcall_end") {
+      active.toolDeltas += 1;
+      if (e.type === "toolcall_delta" && typeof (e as { delta?: unknown }).delta === "string") {
+        active.chars += (e as { delta: string }).delta.length;
+      }
+    } else if (e.type === "text_delta" || e.type === "thinking_delta") {
+      active.chars += e.delta.length;
+      active.deltas += 1;
+    } else {
+      return;
+    }
     const now = Date.now();
     if (active.firstTokenAt === undefined) active.firstTokenAt = now;
     if (active.lastDeltaAt !== undefined && now - active.lastDeltaAt > tuning.stallThresholdMs) {
@@ -593,7 +692,9 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     // 3-token reply into a fabricated 1000 t/s. Below the floor the window is not
     // a measurement, so the row is recorded as unrated (`–`, excluded from
     // averages) rather than as a rate.
-    const streamed = finished.deltas > 0 && output > 0 && durationMs >= tuning.minStreamMs;
+    // Tool-call chunks count as streaming evidence: a turn that streams only
+    // tool calls is live generation, not a replay (TPS-01).
+    const streamed = finished.deltas + finished.toolDeltas > 0 && output > 0 && durationMs >= tuning.minStreamMs;
     const tps = streamed ? Math.round((output / (durationMs / 1000)) * 10) / 10 : 0;
     const ttftMs = streamed && finished.firstTokenAt !== undefined ? finished.firstTokenAt - finished.startedAt : UNKNOWN_TTFT;
     // Decode rate: generation speed over the window after the first token landed,
@@ -627,13 +728,16 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
       status: failed ? "failed" : "ok",
       stopReason,
       sessionId: sessionIdOf(ctx),
+      // Which turn produced this message (#0 = first step). Absent when the
+      // turn_start event was missed; lets Messages rows group with Turns.
+      ...(turn !== undefined ? { turnIndex: turn.index } : {}),
     };
     appendSample(ctx.cwd, sample);
     // Session budget guardrail: history-backed so it survives restarts.
     // Unpriced models (undefined cost) never trip it.
     const guard = sessionCostUsd(readHistory(ctx.cwd, MAX_HISTORY), sample.sessionId);
     const total = guard.cost;
-    const cap = budgetFor(sample.sessionId);
+    const cap = budgetFor(ctx.cwd, sample.sessionId);
     // The guardrail is a floor when some messages are unpriced; say so once a
     // session is actually mixed, so "spent" is never read as a complete figure.
     const floorNote = guard.unpriced > 0 ? `, floor: ${Math.round((guard.unpriced / (guard.priced + guard.unpriced)) * 100)}% unpriced and not counted` : "";
@@ -699,13 +803,24 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
     acc = freshAcc();
   });
 
+  pi.on("tool_execution_start", (event) => {
+    const detail = summarizeArgs(event.toolName, (event as { args?: unknown }).args);
+    if (detail !== undefined) {
+      pendingDetails.set(event.toolCallId, detail);
+      if (pendingDetails.size > 200) pendingDetails.delete(pendingDetails.keys().next().value as string);
+    }
+  });
+
   pi.on("tool_execution_end", (event) => {
+    const detail = pendingDetails.get(event.toolCallId);
+    pendingDetails.delete(event.toolCallId);
     if (!turn) return;
     turn.tools.push({
       name: event.toolName,
       durationMs: event.durationMs ?? 0,
       isError: event.isError,
       endedAt: Date.now(),
+      ...(detail !== undefined ? { detail } : {}),
     });
   });
 
@@ -752,7 +867,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("tps", {
-    description: "Show tokens/sec: /tps [n] recent, /tps live, /tps totals, /tps models, /tps turns [n], /tps tools [n], /tps fleet, /tps cost, /tps budget [usd]",
+    description: "Show tokens/sec: /tps [n] recent, /tps live, /tps totals, /tps models, /tps turns [n] (0-based, #0 = first step), /tps tools [n], /tps fleet, /tps cost, /tps budget [usd]",
     handler: async (args, ctx: ExtensionContext) => {
       const [sub, rawN] = args.trim().split(/\s+/);
       if (sub === "budget") {
@@ -767,6 +882,7 @@ export default function tpsMonitor(pi: ExtensionAPI): void {
           return;
         }
         budgets.set(sid, usd);
+        saveBudgets(ctx.cwd);
         // Sync the warned band so lowering the cap under current spend reports
         // the overage once in the confirmation instead of nagging every message.
         const frac = sessionCostUsd(readHistory(ctx.cwd, MAX_HISTORY), sid).cost / usd;

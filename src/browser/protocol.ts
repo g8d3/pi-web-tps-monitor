@@ -35,6 +35,9 @@ export interface TpsSample {
   status: "ok" | "failed";
   stopReason: string;
   sessionId: string;
+  /** 0-based index of the agent turn that produced this message (#0 = first
+   * step). Absent on pre-fix rows; lets Messages rows group with their turn. */
+  turnIndex?: number;
   /** Human label captured at record time: Pi's session name when set, else an
    * auto-slug of the session's first user message. Absent when neither
    * existed — views fall back to the 8-hex id. Per-row because names can
@@ -48,6 +51,9 @@ export interface TpsToolCall {
   isError: boolean;
   /** Wall-clock end of the call; absent in pre-v16 rows (timeline unknown). */
   endedAt?: number;
+  /** Short summary of the call's arguments (e.g. the bash command head,
+   * max ~60 chars). Absent when the start event was missed. */
+  detail?: string;
 }
 
 export interface TpsTurn {
@@ -129,7 +135,8 @@ export function isTpsSample(v: unknown): v is TpsSample {
     (v.status === undefined || v.status === "ok" || v.status === "failed") &&
     (v.stopReason === undefined || typeof v.stopReason === "string") &&
     (v.sessionId === undefined || typeof v.sessionId === "string") &&
-    (v.sessionName === undefined || typeof v.sessionName === "string")
+    (v.sessionName === undefined || typeof v.sessionName === "string") &&
+    (v.turnIndex === undefined || typeof v.turnIndex === "number")
   );
 }
 
@@ -177,6 +184,7 @@ export function normalizeSample(v: unknown): TpsSample | undefined {
     status: v.status === "failed" ? "failed" : "ok",
     stopReason: typeof v.stopReason === "string" ? v.stopReason : "",
     sessionId: typeof v.sessionId === "string" ? v.sessionId : "",
+    ...(typeof v.turnIndex === "number" ? { turnIndex: v.turnIndex } : {}),
   };
 }
 
@@ -217,7 +225,8 @@ export function isTpsTurn(v: unknown): v is TpsTurn {
 function isTpsToolCall(v: unknown): v is TpsToolCall {
   if (!isRecord(v)) return false;
   if (typeof v.name !== "string" || typeof v.durationMs !== "number" || typeof v.isError !== "boolean") return false;
-  return v.endedAt === undefined || typeof v.endedAt === "number";
+  if (v.endedAt !== undefined && typeof v.endedAt !== "number") return false;
+  return v.detail === undefined || typeof v.detail === "string";
 }
 
 /** Pre-v15 rows lack requestedTools/llmMessages; backfill neutral defaults. */

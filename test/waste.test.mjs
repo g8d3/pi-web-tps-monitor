@@ -66,7 +66,7 @@ test("/tps cost stays quiet about waste when every turn was productive", async (
   assert.match(h.notices.at(-1), /2 turns, 2 completed$/);
 });
 
-test("/tps fleet shows a waste cell per session, unpriced waste as a bare count", async () => {
+test("/tps fleet shows a waste cell per session, unpriced waste labelled", async () => {
   const h = makeWorkspace([
     { output: 200 },
     { outcome: "aborted", input: 1_000_000, output: 0 },
@@ -75,5 +75,5 @@ test("/tps fleet shows a waste cell per session, unpriced waste as a bare count"
   await h.commands.tps.handler("fleet", h.ctx);
   const out = h.notices.at(-1);
   assert.match(out, /waste\s+1 \$3\.00\s+ctx/);
-  assert.match(out, /waste\s+1\s+ctx/); // unpriced waste: count only, no invented dollars
+  assert.match(out, /waste\s+1 unpriced\s+ctx/); // unpriced waste: count labelled, no invented dollars
 });

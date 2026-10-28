@@ -32,8 +32,8 @@ Then type `/tps` in any Pi session. In PI WEB, enable **TPS Monitor** in
 Sessions, turns and tools link to each other inside the tab (filter/expand/jump).
 Sessions show Pi's session name when set, else a slug of the session's first
 prompt, else the 8-hex id (full id in the cell tooltip; filter matches names).
-Opening a PI WEB session or chat position from the tab needs host support that
-PI WEB's plugin API does not expose yet — the rows are ready for it.
+Session cells jump straight to the session via the host `navigate({sessionId})`
+API (filter fallback when the host refuses the route).
 
 ## Fleet monitoring and the retainer
 
@@ -158,9 +158,9 @@ automatically; `/reload` an idle session to add it to a live one.
 
 Terminal only: `pi --extension ./dist/companion.js`, then `/tps`.
 
-`needs.json` is local machine configuration (host, port, file names) and is
-intentionally not part of the public mirror. The plugin does not read it: it
-defines its own constants, e.g. `DEFAULT_BUDGET_USD` in `src/companion.ts`.
+Machine values (budget default, file names, caps) live in named constants,
+e.g. `DEFAULT_BUDGET_USD` in `src/companion.ts`; budget caps the user sets are
+persisted per workspace in `.pi-web/tps-budgets.json`. There is no config file.
 
 See [CHANGELOG.md](CHANGELOG.md) for what each release changed.
 

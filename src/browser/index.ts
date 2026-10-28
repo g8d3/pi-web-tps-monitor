@@ -1,6 +1,7 @@
 // Browser entry: TPS workspace panel (live rate + history) and workspace label.
-// Panel data is fetched from the paired server peer; render stays synchronous
-// by caching the last fetch and re-rendering when it resolves.
+// Panel data arrives over a push channel when the host supports it
+// (server watches the workspace files); polling is the fallback.
+// Render stays synchronous by caching the last fetch and re-rendering.
 
 import type {
   PiWebPlugin,
@@ -10,14 +11,15 @@ import type {
 } from "@jmfederico/pi-web/plugin-api";
 import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsTurn } from "./protocol.js";
 
-import { contextPressure, fleetStats, fmtCost, fmtPartialCost, hasUnaccountedGap, sessionLabel, shortSessionId, unaccountedMs } from "./models.js";
+import { contextPressure, fleetStats, fmtCost, fmtDur, fmtPartialCost, hasUnaccountedGap, perModelCost, sessionLabel, shortSessionId, unaccountedMs } from "./models.js";
 
 const POLL_MS = 2000;
+const KEEPALIVE_MS = 15000;
 const FETCH_STALE_MS = 1500;
 const HISTORY_LIMIT = 500; // match companion MAX_HISTORY + server MAX_LIMIT: the panel sees every row on disk
 const PAGE_SIZE = 10;
-// Sparkline shows the most recent rated messages only: flex gaps never shrink,
-// so 500 bars would force ~1000px of pure gap and overflow any screen.
+// Sparkline shows the most recent rows: rated messages get height, unrated
+// ones a faint tick, so density survives even when most rows are unrated.
 const SPARKLINE_LIMIT = 100;
 
 interface PanelState {
@@ -29,6 +31,7 @@ interface PanelState {
   status: string;
   fetching: boolean;
   lastFetch: number;
+  livePush: boolean;
   filter: string;
   page: number;
   expanded: string[];
@@ -106,6 +109,11 @@ function clock(ts: string): string {
   return Number.isNaN(d.getTime()) ? "--:--:--" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
+function clockShort(ts: string): string {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? "--:--" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 function ctxCell(s: TpsSample): string {
   const p = contextPressure(s.model, s.input, s.cacheRead);
   if (p === undefined) return "–";
@@ -120,6 +128,7 @@ interface ToolRow {
   name: string;
   durationMs: number;
   isError: boolean;
+  detail?: string;
 }
 
 interface ToolStat {
@@ -127,13 +136,14 @@ interface ToolStat {
   calls: number;
   ms: number;
   fails: number;
+  detail?: string;
 }
 
 function toolRows(turns: TpsTurn[], sort: "slow" | "recent"): ToolRow[] {
   const out: ToolRow[] = [];
   for (const t of turns) {
     for (const c of t.tools) {
-      out.push({ ts: t.ts, sessionId: t.sessionId, ...(t.sessionName !== undefined ? { sessionName: t.sessionName } : {}), turnIndex: t.turnIndex, name: c.name, durationMs: c.durationMs, isError: c.isError });
+      out.push({ ts: t.ts, sessionId: t.sessionId, ...(t.sessionName !== undefined ? { sessionName: t.sessionName } : {}), turnIndex: t.turnIndex, name: c.name, durationMs: c.durationMs, isError: c.isError, ...(c.detail !== undefined ? { detail: c.detail } : {}) });
     }
   }
   return sort === "slow"
@@ -148,6 +158,7 @@ function toolStats(rows: ToolRow[]): ToolStat[] {
     s.calls += 1;
     s.ms += r.durationMs;
     if (r.isError) s.fails += 1;
+    if (s.detail === undefined && r.detail !== undefined) s.detail = r.detail;
     totals.set(r.name, s);
   }
   return [...totals.values()].sort((a, b) => b.ms - a.ms);
@@ -163,7 +174,7 @@ function markOf(s: TpsSample): string {
 function titleOf(s: TpsSample): string {
   if (s.status === "failed") return `Failed: ${s.stopReason || "unknown"}`;
   if (!s.streamed) return "Replayed/buffered, not generated live: excluded from averages";
-  if (s.stalled) return "Stalled mid-stream";
+  if (s.stalled) return "Stalled: a mid-stream pause over 3 s";
   return s.approx ? "Estimated (no provider usage)" : "Measured";
 }
 
@@ -173,6 +184,7 @@ const plugin: PiWebPlugin = {
   activate({ html }) {
     const states = new Map<string, PanelState>();
     const hosts = new Set<WorkspacePanelHost>();
+    const channels = new Map<string, { close: () => void }>();
     let disposed = false;
     const timer = setInterval(() => {
       for (const host of hosts) {
@@ -189,11 +201,38 @@ const plugin: PiWebPlugin = {
       const key = keyFor(context.machine.id, context.workspace.projectId, context.workspace.id);
       let state = states.get(key);
       if (!state) {
-        state = { live: undefined, history: [], turns: [], view: "messages", toolSort: "recent", status: "Loading…", fetching: false, lastFetch: 0, filter: "", page: 0, expanded: [] };
+        state = { live: undefined, history: [], turns: [], view: "messages", toolSort: "recent", status: "Loading…", fetching: false, lastFetch: 0, livePush: false, filter: "", page: 0, expanded: [] };
         states.set(key, state);
       }
       return state;
     };
+
+    function applySnapshot(state: PanelState, liveRaw: unknown, histRaw: unknown, turnRaw: unknown): void {
+      state.live = isTpsLive(liveRaw) ? liveRaw : undefined;
+      state.history = Array.isArray(histRaw) ? histRaw.map((r) => normalizeSample(r)).filter((s): s is TpsSample => !!s) : [];
+      state.turns = Array.isArray(turnRaw) ? turnRaw.map((r) => normalizeTurn(r)).filter((t): t is TpsTurn => !!t) : [];
+      state.lastFetch = Date.now();
+      const n = state.history.length;
+      state.status = n === 0 ? "No samples yet in this workspace." : `${n} recent message(s), ${state.turns.length} turn(s).`;
+    }
+
+    function applyUpdate(state: PanelState, liveRaw: unknown, histRaw: unknown, turnRaw: unknown): void {
+      if (isTpsLive(liveRaw)) state.live = liveRaw;
+      // Updates arrive newest-first; merge ahead of the cached rows and cap.
+      const freshH = Array.isArray(histRaw) ? histRaw.map((r) => normalizeSample(r)).filter((s): s is TpsSample => !!s) : [];
+      const freshT = Array.isArray(turnRaw) ? turnRaw.map((r) => normalizeTurn(r)).filter((t): t is TpsTurn => !!t) : [];
+      if (freshH.length) {
+        const seen = new Set(state.history.map((s) => s.ts + s.model + s.output));
+        state.history = [...freshH, ...state.history.filter((s) => !seen.has(s.ts + s.model + s.output))].slice(0, HISTORY_LIMIT);
+      }
+      if (freshT.length) {
+        const seen = new Set(state.turns.map((t) => t.ts + t.sessionId + t.turnIndex));
+        state.turns = [...freshT, ...state.turns.filter((t) => !seen.has(t.ts + t.sessionId + t.turnIndex))].slice(0, HISTORY_LIMIT);
+      }
+      state.lastFetch = Date.now();
+      const n = state.history.length;
+      state.status = n === 0 ? "No samples yet in this workspace." : `${n} recent message(s), ${state.turns.length} turn(s).`;
+    }
 
     async function fetchState(context: WorkspacePanelContext, state: PanelState): Promise<void> {
       if (state.fetching) return;
@@ -208,12 +247,7 @@ const plugin: PiWebPlugin = {
           context.peer.request("history", { limit: HISTORY_LIMIT }),
           context.peer.request("turns", { limit: HISTORY_LIMIT }),
         ]);
-        state.live = isTpsLive(liveRaw) ? liveRaw : undefined;
-        state.history = Array.isArray(histRaw) ? histRaw.map((r) => normalizeSample(r)).filter((s): s is TpsSample => !!s) : [];
-        state.turns = Array.isArray(turnRaw) ? turnRaw.map((r) => normalizeTurn(r)).filter((t): t is TpsTurn => !!t) : [];
-        state.lastFetch = Date.now();
-        const n = state.history.length;
-        state.status = n === 0 ? "No samples yet in this workspace." : `${n} recent message(s), ${state.turns.length} turn(s).`;
+        applySnapshot(state, liveRaw, histRaw, turnRaw);
       } catch (error) {
         state.status = error instanceof Error ? error.message : String(error);
       } finally {
@@ -222,8 +256,60 @@ const plugin: PiWebPlugin = {
       }
     }
 
+    /** Push channel (TPS-26): the server watches the workspace files and sends
+     * fresh rows; polling below becomes the fallback. Refresh stays manual. */
+    async function openWatch(context: WorkspacePanelContext, state: PanelState, key: string): Promise<void> {
+      const peer = context.peer;
+      if (!peer || typeof peer.openChannel !== "function" || channels.has(key)) return;
+      const ctrl = new AbortController();
+      try {
+        const ch = await peer.openChannel("watch", { limit: HISTORY_LIMIT }, {
+          signal: ctrl.signal,
+          onData: (data) => {
+            try {
+              const f = data as { type?: unknown; live?: unknown; history?: unknown; turns?: unknown };
+              if (f.type === "snapshot") {
+                applySnapshot(state, f.live, f.history, f.turns);
+              } else {
+                applyUpdate(state, f.live ?? state.live, f.history ?? [], f.turns ?? []);
+              }
+              state.livePush = true;
+              if (!disposed) context.host.requestRender();
+            } catch {
+              // malformed frame: ignore, polling covers it
+            }
+          },
+        });
+        if (disposed) {
+          try { ctrl.abort(); } catch { /* already gone */ }
+          try { ch.close("done"); } catch { /* already closed */ }
+          return;
+        }
+        channels.set(key, {
+          close: () => {
+            try { ctrl.abort(); } catch { /* already gone */ }
+            try { ch.close("done"); } catch { /* already closed */ }
+          },
+        });
+        const done = () => {
+          channels.delete(key);
+          if (!disposed) {
+            state.livePush = false;
+            context.host.requestRender();
+          }
+        };
+        void ch.closed.then(done, done);
+      } catch {
+        // host without channels (or watch unsupported): polling covers it.
+      }
+    }
+
     function maybeFetch(context: WorkspacePanelContext, state: PanelState): void {
-      if (!state.fetching && Date.now() - state.lastFetch >= FETCH_STALE_MS) {
+      const key = keyFor(context.machine.id, context.workspace.projectId, context.workspace.id);
+      void openWatch(context, state, key);
+      // With push live, poll only as a keepalive; otherwise the classic 2 s loop.
+      const staleMs = state.livePush ? KEEPALIVE_MS : FETCH_STALE_MS;
+      if (!state.fetching && Date.now() - state.lastFetch >= staleMs) {
         void fetchState(context, state);
       }
     }
@@ -240,17 +326,44 @@ const plugin: PiWebPlugin = {
               maybeFetch(context, state);
               const live = state.live;
               const streaming = live?.state === "streaming";
+              // Headline shows the last *rated* message; a replayed tail is a
+              // subline, never the headline (TPS-06).
+              const lastRated: TpsSample | undefined = streaming
+                ? undefined
+                : (live?.last && live.last.streamed ? live.last : state.history.find((s) => s.streamed && s.status === "ok"));
               const last: TpsSample | undefined = streaming ? undefined : (live?.last ?? state.history[0]);
-              const rated = state.history.filter((s) => s.streamed && s.status === "ok");
-              const chrono = rated.slice(0, SPARKLINE_LIMIT).reverse();
-              const max = Math.max(1, ...chrono.map((s) => s.tps));
+              const ratedCount = state.history.filter((s) => s.streamed && s.status === "ok").length;
+              const unratedCount = state.history.length - ratedCount - state.history.filter((s) => s.status === "failed").length;
+              const sparkRows = state.history.slice(0, SPARKLINE_LIMIT).reverse();
+              const max = Math.max(1, ...sparkRows.filter((s) => s.streamed).map((s) => s.tps));
               const stats = modelStats(state.history);
               const q = state.filter.trim().toLowerCase();
               const isTurns = state.view === "turns";
               const isTools = state.view === "tools";
               // `#12` filters to one turn index; plain text matches model/session/tool.
               const turnNum = q.startsWith("#") ? parseInt(q.slice(1), 10) : NaN;
-              const gotoSession = (id: string, name?: string): void => {
+              const openSession = (id: string, name?: string): void => {
+                if (!id) {
+                  state.filter = name ?? "";
+                  state.page = 0;
+                  context.host.requestRender();
+                  return;
+                }
+                // Jump to the session when the host supports it (TPS-27);
+                // fall back to filtering this panel when it does not.
+                try {
+                  const nav = (context as WorkspacePanelContext).navigate;
+                  if (typeof nav === "function") {
+                    void Promise.resolve(nav({ sessionId: id })).catch(() => {
+                      state.filter = name ?? shortSessionId(id);
+                      state.page = 0;
+                      context.host.requestRender();
+                    });
+                    return;
+                  }
+                } catch {
+                  // fall through to filter
+                }
                 state.filter = name ?? shortSessionId(id);
                 state.page = 0;
                 context.host.requestRender();
@@ -262,7 +375,7 @@ const plugin: PiWebPlugin = {
               const listedMsgs = isTurns || isTools || isFleet
                 ? []
                 : state.history.filter(
-                    (s) => !q || s.model.toLowerCase().includes(q) || matchSession(s.sessionId, s.sessionName),
+                    (s) => !q || s.model.toLowerCase().includes(q) || matchSession(s.sessionId, s.sessionName) || (!Number.isNaN(turnNum) && s.turnIndex === turnNum),
                   );
               const listedTurns = isTurns
                 ? state.turns.filter(
@@ -277,7 +390,7 @@ const plugin: PiWebPlugin = {
               const allToolRows = isTools ? toolRows(state.turns, state.toolSort) : [];
               const fleet = isFleet ? fleetStats(state.history, state.turns).filter((f) => !q || matchSession(f.sessionId, f.name)) : [];
               const listedTools = allToolRows.filter(
-                (r) => !q || r.name.toLowerCase().includes(q) || matchSession(r.sessionId, r.sessionName),
+                (r) => !q || r.name.toLowerCase().includes(q) || matchSession(r.sessionId, r.sessionName) || (r.detail !== undefined && r.detail.toLowerCase().includes(q)),
               );
               const listedCount = isTurns ? listedTurns.length : isTools ? listedTools.length : isFleet ? fleet.length : listedMsgs.length;
               const pages = Math.max(1, Math.ceil(listedCount / PAGE_SIZE));
@@ -287,47 +400,87 @@ const plugin: PiWebPlugin = {
               const visibleTools = listedTools.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
               const visibleF = fleet.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
               const statsTools = toolStats(listedTools);
+              const placeholders: Record<string, string> = {
+                messages: "model or session…  •  #N = turn",
+                turns: "model, session, tool or #N",
+                tools: "tool, detail or session",
+                fleet: "session",
+              };
 
               return html`<section class="tps"><style>
   .tps table { border-collapse: collapse; }
-  .tps th, .tps td { border-bottom: 1px solid #888; border-bottom: 1px solid color-mix(in srgb, currentColor 22%, transparent); padding: 3px 6px; text-align: left; vertical-align: top; }
-  .tps thead th { border-bottom: 2px solid #888; border-bottom: 2px solid color-mix(in srgb, currentColor 40%, transparent); }
+  .tps th, .tps td { padding: 4px 6px; text-align: left; vertical-align: middle; border-bottom: 1px solid color-mix(in srgb, currentColor 22%, transparent); }
+  .tps thead th { border-bottom: 2px solid color-mix(in srgb, currentColor 40%, transparent); }
+  .tps button { line-height: 1.3; }
+  .tps .sessbtn { max-width: 20ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  .tps .legend { border-collapse: collapse; margin: 0.4em 0; }
+  .tps .legend td { border-bottom: none; padding: 2px 8px 2px 0; vertical-align: top; }
+  @media (pointer: coarse) {
+    .tps button { min-height: 44px; }
+  }
   @media (max-width: 640px) {
     .tps-narrow-hide { display: none; }
     td.tps-model { display: inline-block; max-width: 15ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+    .tps .sessbtn { max-width: 12ch; }
+    .tps .sortrow { display: flex; gap: 6px; }
+    .tps .sortrow button { flex: 1 1 0; white-space: nowrap; }
   }
 </style>
                 <p style="font-size: 1.6em; margin: 0.4em 0;">
                   ${streaming
                     ? html`⚡ ~${fmtRate(live?.approxTps ?? 0)} <small>t/s streaming</small>${live?.stalled ? html` <small>STALLED</small>` : ""}`
-                    : last
-                      ? last.streamed
-                        ? html`⚡ ${fmtRate(last.tps)} <small>t/s last (${shortModel(last.model)})</small>${last.stalled ? html` <small>stalled mid-stream</small>` : ""}`
-                        : html`⚡ – <small>last was replayed (${shortModel(last.model)})</small>`
-                      : html`⚡ – <small>no data yet</small>`}
+                    : lastRated
+                      ? html`⚡ ${fmtRate(lastRated.tps)} <small>t/s last (${shortModel(lastRated.model)})</small>${lastRated.stalled ? html` <small>stalled mid-stream</small>` : ""}`
+                      : html`⚡ – <small>no rated messages yet</small>`}
+                  ${state.livePush ? html`<small title="Push channel open: rows arrive as they are written"> ● live</small>` : ""}
                 </p>
                 ${streaming
-                  ? html`<p role="status">Streaming ${shortModel(live?.model ?? "?")}${live?.ttftMs !== undefined && live.ttftMs >= 0 ? html` — first token in ${fmtMs(live.ttftMs)}` : ""}. Refresh is automatic.</p>`
+                  ? html`<p role="status">Streaming ${shortModel(live?.model ?? "?")}${live?.ttftMs !== undefined && live?.ttftMs >= 0 ? html` — first token in ${fmtMs(live.ttftMs)}` : ""}.</p>`
                   : last
-                    ? last.streamed
-                      ? html`<p role="status">Last: ${last.output} out tokens in ${(last.durationMs / 1000).toFixed(1)}s${last.approx ? " (estimated)" : ""}, ttft ${fmtMs(last.ttftMs)}, cache hit ${cacheHit(last)} at ${clock(last.ts)}.</p>`
-                      : html`<p role="status">Last message was replayed, not generated live — excluded from rates.</p>`
+                    ? html`<p role="status">Last: ${last.output} out tokens in ${fmtDur(last.durationMs)}${last.approx ? " (estimated)" : ""}, ttft ${fmtMs(last.ttftMs)}, cache hit ${cacheHit(last)} at ${clock(last.ts)}${last.streamed ? "" : " — replayed, not generated live"}.</p>`
                     : html`<p role="status">Ask something in any session in this workspace, then watch this tab.</p>`}
-                <button
-                  ?disabled=${state.fetching || !context.peer?.request}
-                  @click=${() => {
-                    state.lastFetch = 0;
-                    void fetchState(context, state);
-                  }}
-                >
-                  Refresh
-                </button>
-                <p aria-hidden="true" style="display: flex; align-items: flex-end; gap: 2px; height: 48px; margin: 0.6em 0;">
-                  ${chrono.map(
-                    (s) => html`<span
-                      title="${clock(s.ts)} ${s.tps} t/s ${shortModel(s.model)}"
-                      style="flex: 1 1 0; min-width: 0; background: currentColor; opacity: 0.65; height: ${Math.max(4, Math.round((s.tps / max) * 100))}%;"
-                    ></span>`,
+                <p>
+                  <button
+                    ?disabled=${state.fetching}
+                    @click=${() => {
+                      state.lastFetch = 0;
+                      void fetchState(context, state);
+                    }}
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    @click=${async () => {
+                      try {
+                        if (!context.peer?.request) throw new Error("no peer");
+                        const turns = await context.peer.request("turns", { limit: HISTORY_LIMIT });
+                        const blob = new Blob([JSON.stringify(turns)], { type: "application/json" });
+                        const a = document.createElement("a");
+                        a.href = URL.createObjectURL(blob);
+                        a.download = `tps-turns-${context.workspace.id}.json`;
+                        a.click();
+                        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+                      } catch {
+                        state.status = "Export failed: peer request rejected.";
+                        context.host.requestRender();
+                      }
+                    }}
+                    title="Download the turn file this Fleet view reads (input for the free self-serve preview)"
+                  >
+                    Export turns
+                  </button>
+                </p>
+                <p aria-hidden="true" role="img" aria-label="Recent tokens per second, tallest bar fastest" style="display: flex; align-items: flex-end; gap: 2px; height: 48px; margin: 0.6em 0;">
+                  ${sparkRows.map(
+                    (s) => s.streamed
+                      ? html`<span
+                          title="${clock(s.ts)} ${s.tps} t/s ${shortModel(s.model)}"
+                          style="flex: 1 1 0; min-width: 0; background: currentColor; opacity: 0.65; height: ${Math.max(4, Math.round((s.tps / max) * 100))}%;"
+                        ></span>`
+                      : html`<span
+                          title="${clock(s.ts)} unrated ${shortModel(s.model)}"
+                          style="flex: 1 1 0; min-width: 0; background: currentColor; opacity: 0.22; height: 4%;"
+                        ></span>`,
                   )}
                 </p>
                 ${state.history.length || state.turns.length
@@ -339,15 +492,18 @@ const plugin: PiWebPlugin = {
                     </p>
                     <label>Filter <input
                       type="search"
-                      placeholder="model, session or tool"
+                      placeholder=${placeholders[state.view] ?? "filter"}
                       .value=${state.filter}
-                      @change=${(event: Event) => {
+                      @input=${(event: Event) => {
                         if (event.target instanceof HTMLInputElement) {
                           state.filter = event.target.value;
                           state.page = 0;
                           context.host.requestRender();
                         }
                       }}></label>
+                    ${!isTurns && !isTools && !isFleet && unratedCount > 0
+                      ? html`<p><small>${unratedCount} of the last ${state.history.length} message(s) unrated: tool-only turns stream no text (see legend).</small></p>`
+                      : ""}
                     ${isTurns
                       ? html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
                           <thead><tr><th></th><th>Time</th><th>Turn</th><th class="tps-narrow-hide">Msgs</th><th class="tps-narrow-hide">Sess</th><th>LLM</th><th class="tps-narrow-hide">Pre</th><th>t/s</th><th class="tps-narrow-hide">Dec</th><th class="tps-narrow-hide">TTFT</th><th>Tools</th><th class="tps-narrow-hide">Tool time</th><th>Total</th></tr></thead>
@@ -359,60 +515,60 @@ const plugin: PiWebPlugin = {
                                 state.expanded = open ? state.expanded.filter((k) => k !== key) : [...state.expanded, key];
                                 context.host.requestRender();
                               }}>${open ? "–" : "+"}</button>`;
-                              const row = html`<tr title=${`${t.model}${t.provider ? ` via ${t.provider}` : ""}${t.tools.length ? " · " : ""}` + (t.tools.map((c) => `${c.name} ${(c.durationMs / 1000).toFixed(1)}s${c.isError ? " ✗" : ""}`).join(", ") || "no tool calls")}>
+                              const row = html`<tr title=${`${t.model}${t.provider ? ` via ${t.provider}` : ""}${t.tools.length ? " · " : ""}` + (t.tools.map((c) => `${c.name} ${fmtDur(c.durationMs)}${c.isError ? " ✗" : ""}${c.detail ? ` — ${c.detail}` : ""}`).join(", ") || "no tool calls")}>
                                 <td>${t.outcome === "completed" ? toggle : html`✗ ${toggle}`}</td>
                                 <td>${clock(t.ts)}</td>
                                 <td>#${t.turnIndex}</td>
                                 <td class="tps-narrow-hide">${t.llmMessages}</td>
-                                <td class="tps-narrow-hide"><button @click=${() => { gotoSession(t.sessionId, t.sessionName); }} title=${t.sessionId}>${sessionLabel(t.sessionId, t.sessionName)}</button></td>
-                                <td>${t.streamed ? html`${(t.llmDurationMs / 1000).toFixed(1)}s` : html`–`}</td>
+                                <td class="tps-narrow-hide"><button class="sessbtn" @click=${() => { openSession(t.sessionId, t.sessionName); }} title=${`${t.sessionName ?? t.sessionId}\nClick: open session`} >${sessionLabel(t.sessionId, t.sessionName)}</button></td>
+                                <td>${fmtDur(t.llmDurationMs)}</td>
                                 <td class="tps-narrow-hide" title="turn_start → first assistant message_start: the provider roundtrip window (the tax the stream clock cannot see)">${preResp(t.preResponseMs)}</td>
                                 <td>${t.streamed ? html`${fmtRate(t.tps)}` : html`–`}</td>
                                 <td class="tps-narrow-hide">${t.streamed ? decodeRate(t.decodeTps) : "–"}</td>
                                 <td class="tps-narrow-hide">${fmtMs(t.ttftMs)}</td>
                                 <td>${t.tools.length ? t.tools.slice(0, 3).map((c) => c.name).join(", ") : "–"}</td>
-                                <td class="tps-narrow-hide">${(t.toolMsTotal / 1000).toFixed(1)}s</td>
-                                <td title=${hasUnaccountedGap(t) ? `+${(unaccountedMs(t) / 1000).toFixed(1)}s still unexplained after LLM, tools and the measured pre-token window (provider wait is now measured separately as Pre)` : "Step wall-clock"}>${(t.turnMsTotal / 1000).toFixed(1)}s${hasUnaccountedGap(t) ? " ⚠" : ""}</td>
+                                <td class="tps-narrow-hide">${fmtDur(t.toolMsTotal)}</td>
+                                <td title=${`LLM ${fmtDur(t.llmDurationMs)} + tools ${fmtDur(t.toolMsTotal)} + pre ${preResp(t.preResponseMs)} + gap ${fmtDur(unaccountedMs(t))} = ${fmtDur(t.turnMsTotal)}`}>${fmtDur(t.turnMsTotal)}${hasUnaccountedGap(t) ? " ⚠" : ""}</td>
                               </tr>`;
                               if (!open) return [row];
-                              const detail = html`<tr><td></td><td colspan="12">${t.llmMessages > 1 ? html`<div>${t.llmMessages} messages, ${(t.llmDurationMs / 1000).toFixed(1)}s total</div>` : ""}${t.requestedTools > t.tools.length ? html`<div>⚠ ${t.requestedTools} requested, ${t.tools.length} completed</div>` : ""}${t.tools.length
-                                ? t.tools.map((c) => html`<div>${c.name} — ${(c.durationMs / 1000).toFixed(1)}s${c.isError ? " ✗" : ""}</div>`)
+                              const detail = html`<tr><td></td><td colspan="12">${t.llmMessages > 1 ? html`<div>${t.llmMessages} messages, ${fmtDur(t.llmDurationMs)} total</div>` : ""}${t.requestedTools > t.tools.length ? html`<div>⚠ ${t.requestedTools} requested, ${t.tools.length} completed</div>` : ""}<div>Wall-clock: LLM ${fmtDur(t.llmDurationMs)} + tools ${fmtDur(t.toolMsTotal)} + pre ${preResp(t.preResponseMs)} + gap ${fmtDur(unaccountedMs(t))} = ${fmtDur(t.turnMsTotal)}</div>${t.tools.length
+                                ? t.tools.map((c) => html`<div>${c.name} — ${fmtDur(c.durationMs)}${c.isError ? " ✗" : ""}${c.detail ? html` — ${c.detail}` : ""}</div>`)
                                 : html`<em>no tool calls this turn</em>`}</td></tr>`;
                               return [row, detail];
                             })}
                           </tbody>
                         </table></div>`
                       : isTools
-                      ? html`<p>
-                          ${listedTools.length} call(s) from ${state.turns.length} turn(s), sorted
-                          <button ?disabled=${state.toolSort === "recent"} @click=${() => { state.toolSort = "recent"; state.page = 0; context.host.requestRender(); }}>Newest-first</button>
-                          <button ?disabled=${state.toolSort === "slow"} @click=${() => { state.toolSort = "slow"; state.page = 0; context.host.requestRender(); }}>Slowest-first</button>
-                          <br><small>Calls from the running step appear when it finishes.</small>
-                        </p>
-                        ${statsTools.length
+                      ? html`${statsTools.length
                           ? html`<h4>Most expensive tools</h4>
                             <table>
                               <thead><tr><th>Tool</th><th>Calls</th><th>Total</th><th>Fails</th></tr></thead>
                               <tbody>
                                 ${statsTools.slice(0, 8).map(
-                                  (s) => html`<tr>
+                                  (s) => html`<tr title=${s.detail ?? s.name}>
                                     <td>${s.name}</td>
                                     <td>${s.calls}</td>
-                                    <td>${(s.ms / 1000).toFixed(1)}s</td>
+                                    <td>${fmtDur(s.ms)}</td>
                                     <td>${s.fails || "–"}</td>
                                   </tr>`,
                                 )}
                               </tbody>
                             </table>`
                           : ""}
+                        <p class="sortrow">
+                          <span>${listedTools.length} call(s) from ${state.turns.length} turn(s). Sort call list:</span>
+                          <button ?disabled=${state.toolSort === "recent"} @click=${() => { state.toolSort = "recent"; state.page = 0; context.host.requestRender(); }}>Newest-first</button>
+                          <button ?disabled=${state.toolSort === "slow"} @click=${() => { state.toolSort = "slow"; state.page = 0; context.host.requestRender(); }}>Slowest-first</button>
+                        </p>
+                        <p><small>Calls from the running step appear when it finishes.</small></p>
                         <div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                          <thead><tr><th></th><th>Time</th><th class="tps-narrow-hide">Sess</th><th>Turn</th><th>Tool</th><th>Secs</th></tr></thead>
+                          <thead><tr><th></th><th>Time</th><th class="tps-narrow-hide">Sess</th><th>Turn</th><th>Tool</th><th>Detail</th><th>Secs</th></tr></thead>
                           <tbody>
                             ${visibleTools.map(
-                              (r) => html`<tr>
+                              (r) => html`<tr title=${r.detail ?? r.name}>
                                 <td>${r.isError ? "✗" : ""}</td>
                                 <td>${clock(r.ts)}</td>
-                                <td class="tps-narrow-hide"><button @click=${() => { gotoSession(r.sessionId, r.sessionName); }} title=${r.sessionId}>${sessionLabel(r.sessionId, r.sessionName)}</button></td>
+                                <td class="tps-narrow-hide"><button class="sessbtn" @click=${() => { openSession(r.sessionId, r.sessionName); }} title=${`${r.sessionName ?? r.sessionId}\nClick: open session`}>${sessionLabel(r.sessionId, r.sessionName)}</button></td>
                                 <td>#${r.turnIndex}</td>
                                 <td><button @click=${() => {
                                   state.view = "turns";
@@ -420,41 +576,58 @@ const plugin: PiWebPlugin = {
                                   state.page = 0;
                                   context.host.requestRender();
                                 }} title="Open this turn">${r.name}</button></td>
-                                <td>${(r.durationMs / 1000).toFixed(1)}</td>
+                                <td class="tps-narrow-hide" style="max-width: 24ch; overflow: hidden; text-overflow: ellipsis;">${r.detail ?? "–"}</td>
+                                <td>${fmtDur(r.durationMs)}</td>
                               </tr>`,
                             )}
                           </tbody>
                         </table></div>`
                       : isFleet
                       ? html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                      <thead><tr><th>Sess</th><th>Msgs</th><th>Turns</th><th>Done</th><th>t/s</th><th>Tools</th><th>Cost</th><th>Waste</th><th>Ctx</th></tr></thead>
+                      <thead><tr><th>Sess</th><th class="tps-narrow-hide">Msgs</th><th class="tps-narrow-hide">Turns</th><th class="tps-narrow-hide">Done</th><th class="tps-narrow-hide">avg t/s</th><th>Cost</th><th>Waste</th><th class="tps-narrow-hide">Tools</th><th class="tps-narrow-hide">LLM</th><th class="tps-narrow-hide">Span</th><th>Ctx</th></tr></thead>
                       <tbody>
-                        ${visibleF.map(
-                          (f) => html`<tr>
-                            <td><button @click=${() => { gotoSession(f.sessionId, f.name); }} title=${f.sessionId}>${sessionLabel(f.sessionId, f.name)}</button></td>
-                            <td>${f.msgs}</td>
-                            <td>${f.turns}</td>
-                            <td>${f.done}</td>
-                            <td>${fmtRate(f.avgTps)}</td>
-                            <td>${(f.toolMs / 1000).toFixed(0)}s</td>
+                        ${visibleF.flatMap((f) => {
+                          const key = `fleet:${f.sessionId}`;
+                          const open = state.expanded.includes(key);
+                          const spanMs = f.latestTs >= f.earliestTs && f.latestTs !== "" ? Date.parse(f.latestTs) - Date.parse(f.earliestTs) : 0;
+                          const row = html`<tr>
+                            <td><button class="sessbtn" @click=${() => { openSession(f.sessionId, f.name); }} title=${`${f.name ?? f.sessionId}\nClick: open session`}>${sessionLabel(f.sessionId, f.name)}</button>
+                              <button aria-label=${open ? "collapse" : "expand cost detail"} @click=${() => {
+                                state.expanded = open ? state.expanded.filter((k) => k !== key) : [...state.expanded, key];
+                                context.host.requestRender();
+                              }}>${open ? "–" : "+"}</button></td>
+                            <td class="tps-narrow-hide">${f.msgs}</td>
+                            <td class="tps-narrow-hide">${f.turns}</td>
+                            <td class="tps-narrow-hide" title="Turns with outcome completed">${f.done}</td>
+                            <td class="tps-narrow-hide">${fmtRate(f.avgTps)}</td>
                             <td title=${f.unpricedShare > 0 ? `${Math.round(f.unpricedShare * 100)}% of this session's messages have no list price, so this is a floor` : "Estimated spend from priced messages"}>${fmtPartialCost(f.cost, f.msgs - f.unknownCost, f.unknownCost)}</td>
-                            <td title="Turns that failed, aborted or produced no output">${f.wastedTurns === 0 ? "–" : `${f.wastedTurns}${f.wastedCost > 0 ? ` ${fmtCost(f.wastedCost)}` : ""}`}</td>
+                            <td title="Turns that failed, aborted or produced no output">${f.wastedTurns === 0 ? "–" : `${f.wastedTurns}${f.wastedCost > 0 ? ` ${fmtCost(f.wastedCost)}` : " unpriced"}`}</td>
+                            <td class="tps-narrow-hide">${fmtDur(f.toolMs)}</td>
+                            <td class="tps-narrow-hide">${fmtDur(f.llmMs)}</td>
+                            <td class="tps-narrow-hide" title="First to last activity">${fmtDur(spanMs)}</td>
                             <td>${f.pressure === undefined ? "–" : `${Math.round(f.pressure * 100)}%${f.pressure >= 0.8 ? " ⚠" : ""}`}</td>
-                          </tr>`,
-                        )}
+                          </tr>`;
+                          if (!open) return [row];
+                          const models = perModelCost(state.history, f.sessionId);
+                          const detail = html`<tr><td></td><td colspan="10"><div>Working: LLM ${fmtDur(f.llmMs)} + tools ${fmtDur(f.toolMs)}; wall span ${fmtDur(spanMs)}.</div>${models.length
+                            ? models.map((m) => html`<div>${shortModel(m.model)} — ${m.msgs} msgs, ${m.priced > 0 ? fmtCost(m.cost) : "– unpriced"}${m.unpriced > 0 ? ` (+${m.unpriced} unpriced)` : ""}</div>`)
+                            : html`<div>No priced messages.</div>`}</td></tr>`;
+                          return [row, detail];
+                        })}
                       </tbody>
                     </table></div>`
                       : html`<div style="overflow-x: auto;"><table style="white-space: nowrap;">
-                      <thead><tr><th></th><th>Time</th><th class="tps-narrow-hide">Sess</th><th>Model</th><th>Out</th><th class="tps-narrow-hide">Secs</th><th>t/s</th><th class="tps-narrow-hide">Dec</th><th>TTFT</th><th class="tps-narrow-hide">Hit</th><th class="tps-narrow-hide">Ctx</th></tr></thead>
+                      <thead><tr><th></th><th>Time</th><th>Turn</th><th>Sess</th><th>Model</th><th>Out</th><th>Secs</th><th>t/s</th><th class="tps-narrow-hide">Dec</th><th>TTFT</th><th class="tps-narrow-hide">Hit</th><th class="tps-narrow-hide">Ctx</th></tr></thead>
                       <tbody>
                         ${visible.map(
                           (s) => html`<tr title=${titleOf(s)}>
                             <td>${markOf(s)}</td>
                             <td>${clock(s.ts)}</td>
-                            <td class="tps-narrow-hide"><button @click=${() => { gotoSession(s.sessionId, s.sessionName); }} title=${s.sessionId}>${sessionLabel(s.sessionId, s.sessionName)}</button></td>
+                            <td>${s.turnIndex !== undefined ? `#${s.turnIndex}` : "–"}</td>
+                            <td><button class="sessbtn" @click=${() => { openSession(s.sessionId, s.sessionName); }} title=${`${s.sessionName ?? s.sessionId}\nClick: open session`}>${sessionLabel(s.sessionId, s.sessionName)}</button></td>
                             <td class="tps-model">${shortModel(s.model)}</td>
                             <td>${s.output}</td>
-                            <td class="tps-narrow-hide">${(s.durationMs / 1000).toFixed(1)}</td>
+                            <td>${fmtDur(s.durationMs)}</td>
                             <td>${s.streamed ? html`${s.approx ? "~" : ""}${fmtRate(s.tps)}` : html`–`}</td>
                             <td class="tps-narrow-hide">${s.streamed ? decodeRate(s.decodeTps) : "–"}</td>
                             <td>${fmtMs(s.ttftMs)}</td>
@@ -488,7 +661,16 @@ const plugin: PiWebPlugin = {
                       </tbody>
                     </table>`
                   : ""}
-                <p><small>Tip: <code>/tps 10</code> messages, <code>/tps turns</code> steps, <code>/tps tools</code> slowest calls, <code>/tps fleet</code> sessions, <code>/tps cost</code> spend. Rows: ✗ failed, ↺ replayed (excluded), ⚠ stalled.</small></p>
+                <table class="legend">
+                  <tbody>
+                    <tr><td>✗</td><td>failed request or tool error</td></tr>
+                    <tr><td>↺</td><td>replayed/buffered, not generated live — excluded from every average</td></tr>
+                    <tr><td>⚠</td><td>stalled mid-stream (a pause over 3 s) or unexplained wall-clock remainder</td></tr>
+                    <tr><td>+</td><td>after a cost: a floor, some messages have no price — hover for the share</td></tr>
+                    <tr><td>#N</td><td>turn index, 0-based (#0 = the session's first step); #N in Filter jumps to it</td></tr>
+                    <tr><td>Dec</td><td>decode tok/s: generation speed after the first token, TTFT excluded</td></tr>
+                  </tbody>
+                </table>
                 ${isFleet
                   ? html`<p><small>Free self-serve preview of the file this view reads
                       (<code>.pi-web/tps-turns.jsonl</code>, parsed in your browser, nothing uploaded):
@@ -506,15 +688,20 @@ const plugin: PiWebPlugin = {
               const key = keyFor(context.machine.id, context.workspace.projectId, context.workspace.id);
               const state = states.get(key);
               const live = state?.live;
+              const stamp = (iso?: string): string => {
+                if (!iso) return "no data yet";
+                const d = new Date(iso);
+                return Number.isNaN(d.getTime()) ? "no data yet" : `as of ${clockShort(iso)}`;
+              };
               if (live?.state === "streaming") {
-                return [{ type: "text", text: `⚡ ~${fmtRate(live.approxTps)} t/s`, title: "Tokens/sec, streaming estimate" }];
+                return [{ type: "text", text: `⚡ ~${fmtRate(live.approxTps)} t/s`, title: `Tokens/sec, streaming estimate (${stamp(live.updatedAt)})` }];
               }
               const last = live?.last ?? state?.history[0];
               if (last) {
                 if (!last.streamed) {
-                  return [{ type: "text", text: "⚡ –", title: "Last message was replayed, not generated live" }];
+                  return [{ type: "text", text: "⚡ –", title: `Last message was replayed, not generated live (${stamp(last.ts)})` }];
                 }
-                return [{ type: "text", text: `⚡ ${fmtRate(last.tps)} t/s`, title: `Last message: ${last.output} tokens in ${(last.durationMs / 1000).toFixed(1)}s` }];
+                return [{ type: "text", text: `⚡ ${fmtRate(last.tps)} t/s`, title: `Last: ${last.output} tokens in ${fmtDur(last.durationMs)} (${stamp(last.ts)})` }];
               }
               return [{ type: "text", text: "⚡ –", title: "No tokens/sec samples yet in this workspace" }];
             },
@@ -524,6 +711,10 @@ const plugin: PiWebPlugin = {
       dispose() {
         disposed = true;
         clearInterval(timer);
+        for (const ch of channels.values()) {
+          try { ch.close(); } catch { /* already closed */ }
+        }
+        channels.clear();
         states.clear();
         hosts.clear();
       },

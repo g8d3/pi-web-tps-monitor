@@ -1,9 +1,11 @@
 # TPS Monitor — improvement backlog (photo review, 2026-10-28)
 
-Status: **reviewed, not implemented**. Photo review of all four panel views
-(Messages / Turns / Tools / Fleet) on desktop (~1280px) and mobile (390×844)
-is done; screenshots live in `docs/screenshots/`. Next agent: pick the top
-item, implement with tests, bump CHANGELOG, ship as v0.10.10+.
+Status: **implemented in v0.11.0 — 84 tests pass, panel re-photographed below.**
+Photo review of all four panel views (Messages / Turns / Tools / Fleet) on
+desktop (~1280px) and mobile (390×844) drove this release; screenshots live in
+`docs/screenshots/` (`v11-*` = after). TPS-01..TPS-40 are done except TPS-36
+(detail grouping by command) and TPS-24 (kept as labelled dual surfaces),
+which are documented decisions, not open work.
 
 ## Screenshot inventory (`docs/screenshots/`)
 

@@ -171,6 +171,39 @@ export function turnWaste(turns: TpsTurn[]): TurnWaste {
   return out;
 }
 
+export interface PerModelCost {
+  model: string;
+  msgs: number;
+  cost: number;
+  priced: number;
+  unpriced: number;
+}
+
+/** Priced spend split by model for one session, priced messages first. */
+export function perModelCost(history: TpsSample[], sessionId: string): PerModelCost[] {
+  const byModel = new Map<string, PerModelCost>();
+  for (const s of history) {
+    if (s.sessionId !== sessionId) continue;
+    const e = byModel.get(s.model) ?? { model: s.model, msgs: 0, cost: 0, priced: 0, unpriced: 0 };
+    e.msgs += 1;
+    const c = sampleCostOf(s);
+    if (c === undefined) e.unpriced += 1;
+    else {
+      e.cost += c;
+      e.priced += 1;
+    }
+    byModel.set(s.model, e);
+  }
+  return [...byModel.values()].sort((a, b) => b.cost - a.cost);
+}
+
+/** Human duration: `85ms` under a second, `4.3s` above. Tool tables use this
+ * everywhere so sub-second calls stop reading as `0.0`. */
+export function fmtDur(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "–";
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
 export interface SessionStat {
   sessionId: string;
   /** Human label: Pi's session name when set, else the first-prompt slug,
@@ -178,6 +211,10 @@ export interface SessionStat {
    * existed — views fall back to the 8-hex id. */
   name?: string;
   latestTs: string;
+  /** First activity in this session (wall-clock span = latestTs − earliestTs). */
+  earliestTs: string;
+  /** Sum of turn LLM-slice seconds across this session (working time). */
+  llmMs: number;
   msgs: number;
   avgTps: number;
   turns: number;
@@ -239,7 +276,10 @@ export function fleetStats(history: TpsSample[], turns: TpsTurn[]): SessionStat[
       if (c === undefined) unknownCost += 1;
       else cost += c;
     }
-    const latest = [...samples.map((s) => s.ts), ...ts.map((t) => t.ts)].sort().at(-1) ?? "";
+    const allTs = [...samples.map((s) => s.ts), ...ts.map((t) => t.ts)].sort();
+    const latest = allTs.at(-1) ?? "";
+    const earliest = allTs.at(0) ?? "";
+    const llmMs = ts.reduce((a, t) => a + t.llmDurationMs, 0);
     const newest = [...samples].sort((a, b) => a.ts.localeCompare(b.ts)).at(-1);
     // Latest human label wins: names can be set mid-session, so the newest
     // row carrying one is what the user most recently called it.
@@ -251,6 +291,8 @@ export function fleetStats(history: TpsSample[], turns: TpsTurn[]): SessionStat[
       sessionId,
       ...(named !== undefined ? { name: named } : {}),
       latestTs: latest,
+      earliestTs: earliest,
+      llmMs,
       msgs: samples.length,
       avgTps: ms > 0 ? Math.round((outTok / (ms / 1000)) * 10) / 10 : 0,
       turns: ts.length,

@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.11.0 — push, links and honest tables (TPS-01..40)
+
+Photo review of all four views on desktop and phone (see `IMPROVEMENTS.md`
+and `docs/screenshots/`) drove this release. 84 tests pass (67 before).
+
+- **Push instead of poll (TPS-26).** The panel opens a `watch` channel; the
+  server `fs.watch`es the workspace files and pushes only newer rows
+  (`after` cursor, TPS-05). Polling is the fallback, Refresh is always
+  clickable, and a `● live` dot shows the channel is open.
+- **Sessions link (TPS-27).** Session cells call `navigate({sessionId})`
+  with filter fallback. The old "host cannot do it" note was wrong.
+- **90% of rows were fake replays (TPS-01).** `toolcall_delta` now counts as
+  streaming evidence, so tool-only turns rate instead of showing `–`.
+  Samples also carry `turnIndex`, and Messages shows a `#N` turn badge with
+  `#N` filtering (TPS-32).
+- **Turns add up (TPS-07/34).** LLM seconds always show; the Total cell and
+  the expander print `LLM + tools + pre + gap = total`.
+- **Fleet is about money (TPS-08/16/38/39).** Cost moves left of the scroll
+  on desktop and stays visible on phones; new LLM/Span columns (working
+  vs wall time); expandable per-model cost split; Done is Completed;
+  avg t/s labelled; unpriced waste reads `N unpriced` (TPS-14).
+- **Tools make sense (TPS-10/35/36).** Durations render `85ms`-style;
+  sort controls sit with the call list they sort; tool-arg details
+  (bash command head) surface in tooltips, expanders and `/tps tools`;
+  server records them from `tool_execution_start` args.
+- **Header shrunk to one status line (TPS-06/28)** showing the last *rated*
+  message; Refresh + Export turns; sparkline draws faint ticks for unrated
+  rows (TPS-09/13/15); compact legend table replaces scattered tips
+  (TPS-30), including `#0 = first step` (TPS-25).
+- **Phone (TPS-16..20).** Sess chip stays in Messages (TPS-31), Secs stays
+  everywhere (TPS-40), 44 px touch targets, one-line sort toggle, full
+  row-height/ellipsis rules, CSS pinned by `test/css.test.mjs`.
+- **Config honesty (TPS-03/04).** `needs.json` is gone; budget caps persist
+  in `.pi-web/tps-budgets.json` and survive restarts.
+- Chat mirrors the panel: turn badges, gap arithmetic, per-model cost
+  split, `translate`d waste labels. Slugs keep unicode letters (TPS-22).
+
 ## v0.10.9 — sessions have human names
 
 Fleet, Messages, Turns, Tools and `/tps fleet` showed raw 8-hex session ids.
