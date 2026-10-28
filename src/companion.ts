@@ -2,7 +2,7 @@
 // to the workspace (<cwd>/.pi-web/tps-live.json + tps-history.jsonl) where the
 // PI WEB server peer (same package) can read it. Also provides /tps in chat.
 
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { decodeRateOf, isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsToolCall, type TpsTurn } from "./browser/protocol.js";
@@ -214,7 +214,11 @@ export function appendLine(path: string, row: unknown): void {
   if (st.lines > MAX_HISTORY || st.bytes > MAX_HISTORY_BYTES) {
     const kept = trimLog(readFileSync(path, "utf8").split("\n").filter(Boolean), MAX_HISTORY, MAX_HISTORY_BYTES);
     const body = kept.join("\n") + "\n";
-    writeFileSync(path, body);
+    // Atomic rotation: readers never observe a truncated file (a direct
+    // truncate+write can serve an empty read to a concurrent server poll).
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, body);
+    renameSync(tmp, path);
     st.lines = kept.length;
     st.bytes = Buffer.byteLength(body);
   }

@@ -229,6 +229,30 @@ function isTpsToolCall(v: unknown): v is TpsToolCall {
   return v.detail === undefined || typeof v.detail === "string";
 }
 
+/** Newest-first union of cached and incoming rows, capped. Every read path
+ * (poll, push, retry) merges through here so a torn read or partial snapshot
+ * can never shrink good state — the panel only ever grows toward the cap. */
+function mergeRows<T extends { ts: string }>(current: T[], incoming: T[], key: (r: T) => string, cap: number): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const r of [...incoming, ...current]) {
+    const k = key(r);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  out.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+  return out.slice(0, Math.max(1, cap));
+}
+
+export function mergeSamples(current: TpsSample[], incoming: TpsSample[], cap: number): TpsSample[] {
+  return mergeRows(current, incoming, (s) => s.ts + s.model + s.output, cap);
+}
+
+export function mergeTurns(current: TpsTurn[], incoming: TpsTurn[], cap: number): TpsTurn[] {
+  return mergeRows(current, incoming, (t) => t.ts + t.sessionId + t.turnIndex, cap);
+}
+
 /** Pre-v15 rows lack requestedTools/llmMessages; backfill neutral defaults. */
 export function normalizeTurn(v: unknown): TpsTurn | undefined {
   if (!isTpsTurn(v)) return undefined;

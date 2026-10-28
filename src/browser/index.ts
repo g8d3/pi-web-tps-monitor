@@ -9,7 +9,7 @@ import type {
   WorkspacePanelContext,
   WorkspacePanelHost,
 } from "@jmfederico/pi-web/plugin-api";
-import { isTpsLive, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsTurn } from "./protocol.js";
+import { isTpsLive, mergeSamples, mergeTurns, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsTurn } from "./protocol.js";
 
 import { contextPressure, fleetStats, fmtCost, fmtDur, fmtPartialCost, hasUnaccountedGap, perModelCost, sessionLabel, shortSessionId, unaccountedMs } from "./models.js";
 
@@ -211,8 +211,14 @@ const plugin: PiWebPlugin = {
 
     function applySnapshot(state: PanelState, liveRaw: unknown, histRaw: unknown, turnRaw: unknown): void {
       state.live = isTpsLive(liveRaw) ? liveRaw : undefined;
-      state.history = Array.isArray(histRaw) ? histRaw.map((r) => normalizeSample(r)).filter((s): s is TpsSample => !!s) : [];
-      state.turns = Array.isArray(turnRaw) ? turnRaw.map((r) => normalizeTurn(r)).filter((t): t is TpsTurn => !!t) : [];
+      // Merge, never replace: a torn read or partial snapshot must not shrink
+      // good state (mergeSamples/mergeTurns keep the newest HISTORY_LIMIT).
+      const hist = Array.isArray(histRaw) ? histRaw.map((r) => normalizeSample(r)).filter((s): s is TpsSample => !!s) : [];
+      const turns = Array.isArray(turnRaw) ? turnRaw.map((r) => normalizeTurn(r)).filter((t): t is TpsTurn => !!t) : [];
+      if (hist.length > 0) state.history = mergeSamples(state.history, hist, HISTORY_LIMIT);
+      else if (state.history.length === 0) state.history = [];
+      if (turns.length > 0) state.turns = mergeTurns(state.turns, turns, HISTORY_LIMIT);
+      else if (state.turns.length === 0) state.turns = [];
       state.lastFetch = Date.now();
       const n = state.history.length;
       state.status = n === 0 ? "No samples yet in this workspace." : `${n} recent message(s), ${state.turns.length} turn(s).`;
@@ -273,14 +279,8 @@ const plugin: PiWebPlugin = {
       // Updates arrive newest-first; merge ahead of the cached rows and cap.
       const freshH = Array.isArray(histRaw) ? histRaw.map((r) => normalizeSample(r)).filter((s): s is TpsSample => !!s) : [];
       const freshT = Array.isArray(turnRaw) ? turnRaw.map((r) => normalizeTurn(r)).filter((t): t is TpsTurn => !!t) : [];
-      if (freshH.length) {
-        const seen = new Set(state.history.map((s) => s.ts + s.model + s.output));
-        state.history = [...freshH, ...state.history.filter((s) => !seen.has(s.ts + s.model + s.output))].slice(0, HISTORY_LIMIT);
-      }
-      if (freshT.length) {
-        const seen = new Set(state.turns.map((t) => t.ts + t.sessionId + t.turnIndex));
-        state.turns = [...freshT, ...state.turns.filter((t) => !seen.has(t.ts + t.sessionId + t.turnIndex))].slice(0, HISTORY_LIMIT);
-      }
+      if (freshH.length) state.history = mergeSamples(state.history, freshH, HISTORY_LIMIT);
+      if (freshT.length) state.turns = mergeTurns(state.turns, freshT, HISTORY_LIMIT);
       state.lastFetch = Date.now();
       const n = state.history.length;
       state.status = n === 0 ? "No samples yet in this workspace." : `${n} recent message(s), ${state.turns.length} turn(s).`;
