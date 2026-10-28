@@ -136,6 +136,119 @@ innerWidth + 1` at 390 px with 500 rows loaded.
 - TPS-25 Turns `#0` row in mobile photo: turnIndex 0 among #1–#7 suggests an
   unnumbered/pre-history turn leaking in; check `turn_start` without index.
 
+## Voice review round (2026-10-28, phone walkthrough)
+
+The user walked the live panel on mobile and dictated findings. Verified
+against `plugin-api.d.ts` / `server-plugin-api.d.ts` (pi-web 1.202610.6):
+
+- **Push is feasible (TPS-26).** Both halves exist: browser
+  `PluginPeer.openChannel(operation, input, options)` and server
+  `openChannel(ctx) -> { receive, send, closed }` with `send()` pushing JSON
+  frames. Panel could open a channel; the server peer (same machine,
+  `machineSpecific`) `fs.watch`es the JSONL files and pushes new rows.
+  Needs browser `apiVersion` 4 -> 5 + server peer channel handler. Refresh
+  then becomes a manual fallback / connection indicator, not the data path.
+- **Click-to-session is feasible (TPS-27).** `WorkspacePanelContext` carries
+  `navigate: PluginNavigate`, and `PluginNavigationDestination` accepts
+  `{ sessionId }` ("full, exact session ID", route failures surface in host
+  UI). Rows already carry full session ids. The README claim ("host support
+  … not exposed") is outdated — wire session buttons to
+  `navigate({ sessionId })` and verify at runtime.
+- **Cache-Hit and Secs columns already exist on desktop** (`Hit`, `Secs`)
+  but both are `tps-narrow-hide`, i.e. invisible on the phone the user
+  reviewed on. Several "missing data" complaints below are really this.
+
+### TPS-26 Push instead of poll (major)
+Panel opens a peer channel; server watches `.pi-web/tps-*.jsonl` and pushes
+new rows. Polling + Refresh become fallback. Requires apiVersion 5, channel
+on both ends, reconnect/backoff. Accept: no 2 s full refetch in steady state;
+Refresh never disables during normal use.
+
+### TPS-27 Session buttons navigate to the session
+Use `context.navigate({ sessionId })` (full id, already on every row).
+Accept: clicking a session cell in any view opens that session; failure
+surfaces host-side, then keep filter-fallback.
+
+### TPS-28 Collapse the headline into the table
+The two headline paragraphs restate table row 1. Once Duration (TPS-40) and
+Cache-Hit are visible everywhere, delete both paragraphs; keep one compact
+status line (live state or last-rated rate). Accept: no duplicated numbers
+between header and row 1.
+
+### TPS-29 Row height / broken divider lines
+Sess cells (wrapping session buttons) render taller than siblings and row
+rules look cut. Fix: `vertical-align`, button `line-height`, no-wrap rules
+for the label cells. Accept: uniform row heights at 1280 and 390 px.
+
+### TPS-30 Legend, not scattered tips
+Replace the tip paragraph with a compact legend (icons + one-line meaning
+ each). Reword: `stalled` = "paused mid-stream > 3 s" (was misread),
+`replay` = "replayed/buffered, not generated live, excluded from averages",
+`failed` = provider/stop failure. Accept: every mark in the table resolves to
+one legend row.
+
+### TPS-31 Same-session visibility on mobile
+Messages hides Sess < 640 px, so consecutive rows can't be attributed.
+Keep a session chip on narrow (short label or 8-hex), or group rows under a
+session subheader. Accept: on a phone, two adjacent rows show same/different
+session without scrolling.
+
+### TPS-32 Turn grouping in Messages
+Record `turnIndex` on samples (the companion knows the current turn) and
+show it as a badge; Messages filter already understands `#N` for turns —
+extend it to messages. Show inter-row gap ("+3 s since previous") on
+unrated follow-ups so chains read as chains. Accept: the 531-token row and
+its replay follow-ups visibly belong together.
+
+### TPS-33 One table or four? (decision: keep four, link them)
+Views have different grain (message / turn / call / session); merging them
+into one table duplicates or hides. Keep the four, but every row in every
+view must answer "which turn / which session" (badges + existing jumps).
+Document here; revisit only if TPS-32 badges prove insufficient.
+
+### TPS-34 Turn Total must show its arithmetic
+`turnMsTotal` is wall-clock (LLM stream + tools + pre-response + unexplained
+gap). Users try to add the visible cells and fail (8.2 + 0.1 != 10.4).
+Expander/tooltip must print the sum: `LLM + tools + pre + gap = total`, with
+the gap named ("provider/harness wait"). Accept: every Total decomposes
+without remainder.
+
+### TPS-35 Sort buttons sit above the wrong table
+"Newest-first / Slowest-first" render above "Most expensive tools" but sort
+the call list below it. Move them next to the call list with a label ("Sort
+call list:"). Accept: no control is separated from its table by another table.
+
+### TPS-36 bash dominates Tools (research, document first)
+376 calls / 1368 s / 15 errors makes the totals table one row that matters.
+Breaking it down needs the command behind each call — check whether
+`tool_execution_end` carries args; if yes, group by argv[0]. If no, file as
+blocked-on-hook-data, don't guess. Document, don't build yet.
+
+### TPS-37 Session names stay frozen (decision)
+Slug is captured once from the first prompt; Pi session rename already wins
+when set. Do NOT auto-update as the session evolves — Fleet history needs
+stable identity. Long slugs wrap; allow CSS ellipsis + full name in tooltip
+(already full id; add full name). Document here.
+
+### TPS-38 Fleet columns labelled and completed
+- "Done" -> "Completed" (turns with `outcome: completed`), with tooltip.
+- Msgs ~= Turns is normal (usually 1 assistant message per turn); keep both,
+  add tooltip for when they differ (multi-message turns).
+- t/s header -> "avg t/s" (it is the mean over rated rows).
+- Add LLM time next to tool time, plus wall span (first message -> last
+  message): working time vs elapsed, as requested.
+Accept: every Fleet header is self-explanatory or one hover away.
+
+### TPS-39 Cost per model (minor)
+Multi-model sessions mix prices; actuals already handle it per message.
+Add a per-model cost split in the Fleet row expander/tooltip. Cheap, do with
+TPS-38.
+
+### TPS-40 Duration on every row, including mobile
+`Secs` is `tps-narrow-hide` — phone users never see how long a message took.
+Keep Secs visible on narrow (it is a short column) or fold it into the Time
+cell title + legend. Accept: duration reachable on 390 px without scrolling.
+
 ## Resume instructions (connection lost? start here)
 
 1. `cd e095-tps-monitor && npm test` — expect 67 pass.
