@@ -124,18 +124,29 @@ const plugin = {
           let cursor = "";
           let timer: ReturnType<typeof setTimeout> | undefined;
           let watcher: ReturnType<typeof watch> | undefined;
-          const track = (snap: { history: TpsSample[]; turns: TpsTurn[] }): void => {
-            for (const r of [...snap.history, ...snap.turns]) {
+          const track = (rows: Array<{ ts: string }>): void => {
+            for (const r of rows) {
               if (r.ts > cursor) cursor = r.ts;
             }
           };
+          // One bounded frame cannot carry 500 rows: overflow throws and kills
+          // the channel. The snapshot goes out in small chunk frames instead.
+          const CHUNK = 50;
           const pushFull = () => {
             if (context.signal.aborted) return;
             sent += 1;
             try {
               const snap = snapshot(root, { limit: cap });
-              track(snap);
-              context.send(toJson({ type: "snapshot", ...snap }));
+              track(snap.history);
+              track(snap.turns);
+              context.send(toJson({ type: "snapshot-start", live: snap.live }));
+              for (let i = 0; i < snap.history.length; i += CHUNK) {
+                context.send(toJson({ type: "snapshot-part", kind: "history", rows: snap.history.slice(i, i + CHUNK) }));
+              }
+              for (let i = 0; i < snap.turns.length; i += CHUNK) {
+                context.send(toJson({ type: "snapshot-part", kind: "turns", rows: snap.turns.slice(i, i + CHUNK) }));
+              }
+              context.send(toJson({ type: "snapshot-done" }));
             } catch {
               dispose();
             }
@@ -154,7 +165,8 @@ const plugin = {
                 history: snap.history.filter((r) => r.ts > cursor),
                 turns: snap.turns.filter((r) => r.ts > cursor),
               };
-              track(snap);
+              track(snap.history);
+              track(snap.turns);
               context.send(toJson({ type: "update", ...fresh }));
             } catch {
               dispose();

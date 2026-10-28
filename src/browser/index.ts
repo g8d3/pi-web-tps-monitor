@@ -186,6 +186,7 @@ const plugin: PiWebPlugin = {
     const hosts = new Set<WorkspacePanelHost>();
     const channels = new Map<string, { close: () => void }>();
     const opening = new Set<string>();
+    const lastAttempt = new Map<string, number>();
     let disposed = false;
     const timer = setInterval(() => {
       for (const host of hosts) {
@@ -215,6 +216,41 @@ const plugin: PiWebPlugin = {
       state.lastFetch = Date.now();
       const n = state.history.length;
       state.status = n === 0 ? "No samples yet in this workspace." : `${n} recent message(s), ${state.turns.length} turn(s).`;
+    }
+
+    interface Accumulating {
+      live: unknown;
+      history: unknown[];
+      turns: unknown[];
+    }
+    const accumulators = new Map<string, Accumulating>();
+
+    function onFrame(key: string, state: PanelState, context: WorkspacePanelContext, data: unknown): void {
+      const f = data as { type?: unknown; live?: unknown; history?: unknown; turns?: unknown; kind?: unknown; rows?: unknown };
+      if (f.type === "snapshot-start") {
+        accumulators.set(key, { live: f.live, history: [], turns: [] });
+        return;
+      }
+      if (f.type === "snapshot-part") {
+        const acc = accumulators.get(key);
+        if (!acc) return;
+        if (f.kind === "history" && Array.isArray(f.rows)) acc.history.push(...f.rows);
+        if (f.kind === "turns" && Array.isArray(f.rows)) acc.turns.push(...f.rows);
+        return;
+      }
+      if (f.type === "snapshot-done") {
+        const acc = accumulators.get(key);
+        accumulators.delete(key);
+        if (!acc) return;
+        applySnapshot(state, acc.live, acc.history, acc.turns);
+        state.livePush = true;
+        if (!disposed) context.host.requestRender();
+        return;
+      }
+      // Incremental update (small by construction).
+      applyUpdate(state, f.live ?? state.live, f.history ?? [], f.turns ?? []);
+      state.livePush = true;
+      if (!disposed) context.host.requestRender();
     }
 
     function applyUpdate(state: PanelState, liveRaw: unknown, histRaw: unknown, turnRaw: unknown): void {
@@ -261,7 +297,10 @@ const plugin: PiWebPlugin = {
      * fresh rows; polling below becomes the fallback. Refresh stays manual. */
     async function openWatch(context: WorkspacePanelContext, state: PanelState, key: string): Promise<void> {
       const peer = context.peer;
+      // Throttle attempts: a failing transport must never become a storm.
       if (!peer || typeof peer.openChannel !== "function" || channels.has(key) || opening.has(key)) return;
+      if (Date.now() - (lastAttempt.get(key) ?? 0) < 10000) return;
+      lastAttempt.set(key, Date.now());
       opening.add(key);
       const ctrl = new AbortController();
       try {
@@ -269,14 +308,7 @@ const plugin: PiWebPlugin = {
           signal: ctrl.signal,
           onData: (data) => {
             try {
-              const f = data as { type?: unknown; live?: unknown; history?: unknown; turns?: unknown };
-              if (f.type === "snapshot") {
-                applySnapshot(state, f.live, f.history, f.turns);
-              } else {
-                applyUpdate(state, f.live ?? state.live, f.history ?? [], f.turns ?? []);
-              }
-              state.livePush = true;
-              if (!disposed) context.host.requestRender();
+              onFrame(key, state, context, data);
             } catch {
               // malformed frame: ignore, polling covers it
             }
@@ -295,12 +327,13 @@ const plugin: PiWebPlugin = {
         });
         const done = () => {
           channels.delete(key);
+          accumulators.delete(key);
           if (!disposed) {
             state.livePush = false;
             context.host.requestRender();
           }
         };
-        void ch.closed.then(done, done);
+        if (ch.closed) void ch.closed.then(done, done);
       } catch {
         // host without channels (or watch unsupported): polling covers it.
       } finally {
