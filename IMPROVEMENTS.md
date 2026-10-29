@@ -3,11 +3,11 @@
 Status: **implemented in v0.11.0 — 84 tests pass, panel re-photographed below.**
 Photo review of all four panel views (Messages / Turns / Tools / Fleet) on
 desktop (~1280px) and mobile (390×844) drove this release; screenshots live in
-`docs/screenshots/` (`v11-*` = after). TPS-01..TPS-40 are done except TPS-36
+`../e095-tps-monitor-ops/screenshots/` (`v11-*` = after). TPS-01..TPS-40 are done except TPS-36
 (detail grouping by command) and TPS-24 (kept as labelled dual surfaces),
 which are documented decisions, not open work.
 
-## Screenshot inventory (`docs/screenshots/`)
+## Screenshot inventory (`../e095-tps-monitor-ops/screenshots/`)
 
 | File | What it proves |
 |---|---|
@@ -257,5 +257,5 @@ cell title + legend. Accept: duration reachable on 390 px without scrolling.
 2. Implement topmost open item, add/extend the matching `test/*.test.mjs`.
 3. CHANGELOG entry + version bump per repo habit (v0.10.x).
 4. Rebuild (`npm run build`), re-screenshot the touched view at 1280 and 390
-   (`agent-browser set viewport …`), compare with `docs/screenshots/`.
+   (`agent-browser set viewport …`), compare with `../e095-tps-monitor-ops/screenshots/`.
 5. Commit + push to origin; leave PI WEB (PID 2023, port 8504) running.
