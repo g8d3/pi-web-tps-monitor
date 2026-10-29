@@ -469,6 +469,10 @@ const plugin: PiWebPlugin = {
   .tps .legend td { border-bottom: none; padding: 2px 8px 2px 0; vertical-align: top; }
   @media (pointer: coarse) {
     .tps button { min-height: 44px; }
+    /* Table cells stay dense: 44px per row would triple the table height
+       on a phone (the user's screenshot showed ~60px rows). 32px remains
+       tappable inside a table; full 44px stays on panel-level controls. */
+    .tps td button { min-height: 32px; padding: 2px 6px; font-size: 0.92em; }
   }
   @media (max-width: 640px) {
     .tps-narrow-hide { display: none; }
