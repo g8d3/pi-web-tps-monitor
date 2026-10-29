@@ -1,51 +1,32 @@
 # Handoff after an external PI WEB restart (read this first, then act)
 
 ## What happened
-- `e095-tps-monitor` v11 is DONE and pushed: main @ `fa65bd1`.
-- 87/87 tests pass (`npm test` in `e095-tps-monitor/`).
-- The daemon was restarted EXTERNALLY to serve the new plugin revision
-  (browser bundles only load under the active revision; a rebuild alone 404s).
-- You are a fresh agent in session `Revisa el plugin TPS de pi`
-  (cwd `/home/vuos/code/p4`). The repo is the source of truth.
-
-## Root causes found and fixed (your checks)
-1. **Channel storm (fixed, proven):** first snapshot frame carried ~500 KB in
-   one `send()` → host dropped it → reopen loop at ~11/s. Fixed with 50-row
-   chunks + 10 s open throttle. Steady state: ONE watch channel, polls backed
-   off to 15 s keepalive, `● live` dot on.
-2. **Out-of-order snapshot (fixed):** start frame carries
-   `historyTotal`/`turnsTotal`; incomplete snapshots fall back to fetch.
-3. **500 → 1 shrink (fixed, needs your confirmation):** after minutes open the
-   list collapsed to 1 row. Prime suspect: the companion's rotation rewrote
-   the JSONL with truncate+write, so a concurrent server read observed a torn
-   (near-empty) file and the panel replaced good state with it. Fixes (both
-   in this build, either alone would do):
-   - rotation is atomic (tmp file + rename, never truncate-in-place);
-   - every read path merges (`mergeSamples`/`mergeTurns` in protocol.ts):
-     state only ever grows toward the 500 cap, never shrinks.
+- `e095-tps-monitor` v11 is DONE and pushed. 87/87 tests pass.
+- The TPS tab disappeared: ANY file change under the experiment (this time
+  docs/screenshots) changes the host's whole-dir revision hash → stale →
+  the versioned browser module 404s → no tab. Rule now in AGENTS.md.
+- New: repeated manual checks are codified in `docs/verify-tps.sh`
+  (`suite | revision | files | panel | watch | report`). Run it instead of
+  re-deriving the checklist. It currently reports revision FAIL (expected —
+  that is why the daemon was restarted).
+- The daemon was restarted EXTERNALLY. You are a fresh agent in session
+  `Revisa el plugin TPS de pi` (cwd `/home/vuos/code/p4`).
 
 ## Verify now (in order)
-1. Plugin revision live: `activeRevision==desiredRevision`,
-   `restartRequired: false`, health healthy, via `/api/plugins`.
-2. TPS tab loads (PI WEB `p4 / master · main`): headline shows a rate,
-   **`● live` dot present**, Turn column with `#N` badges, legend table.
-3. **500-row persistence (the main check):** reload → `Page 1 of 50
-   (500 rows)`. Leave the panel open 3+ minutes WITH streaming activity
-   (the shrink needed concurrent writes), re-check the DOM count. Must stay
-   at/near 500 — never collapse to a handful of rows. Some rotation churn at
-   exactly 500 is normal; a collapse is the bug.
-4. Push quiet: `journalctl --user -u pi-web-sessiond --since "5 minutes ago" |
-   grep -c "channels/watch"` should be ~1 per open panel, not ~100/min.
-5. Re-screenshot the 4 views (desktop 1280 + mobile 390) into
-   `e095-tps-monitor/docs/screenshots/` as `v11-live-*.png` (replace the
-   pre-fix shots only if the UI matches).
-6. Quick mobile pass (390×844): Fleet Cost visible without scroll, no
-   page-level overflow.
+1. Run `docs/verify-tps.sh suite revision files` — all must PASS.
+   (If revision still FAILs: the tree changed again; find what with
+   `git status`, then restart via `docs/restart-resume.sh` + a new handoff.)
+2. Run `docs/verify-tps.sh panel` — asserts the TPS tab exists, `● live`
+   is on, screenshots 4 views to /tmp/tps-verify.
+3. Run `docs/verify-tps.sh watch report` (3 min) — no channel storm.
+4. Copy proving shots to `e095-tps-monitor/docs/screenshots/` ONLY if the UI
+   changed; note that ANY new file under the experiment stales the revision
+   again (screenshots committed ⇒ another restart). Prefer reusing shots.
+5. Quick mobile pass only if the panel code changed (it did not).
 
 ## Then report to the user (in English, one verdict sentence first)
-- What the screenshots prove, server URLs + PIDs, what remains open
-  (known: `needs.json` removed; budgets persist; apiVersion 3 deprecation
-  warning is upstream noise, migration to v5 is future work).
-- Commit + push any new screenshots. Leave PI WEB running.
-- Do NOT restart the daemon again unless a rebuild changed `dist/` —
-  and then use `docs/restart-resume.sh` + a new handoff like this one.
+- Paste the verify-tps.sh PASS/FAIL table. State plainly the tab broke from
+  the screenshot commit, the rule that prevents recurrence, server URLs +
+  PIDs. Proving screenshots already exist from the last verification; only
+  re-take if something actually changed.
+- Commit + push anything you changed. Leave PI WEB running.
