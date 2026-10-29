@@ -480,22 +480,29 @@ const plugin: PiWebPlugin = {
     .tps .sessbtn { max-width: 12ch; }
     .tps .sortrow { display: flex; gap: 6px; }
     .tps .sortrow button { flex: 1 1 0; white-space: nowrap; }
+    /* The live header block (headline + status + buttons + sparkline) ate
+       half a phone screen. Compact it: single-line headline, small status,
+       short sparkline. Buttons keep full height (touch) but stop wrapping. */
+    .tps .headline { font-size: 1.15em !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tps .statusline { font-size: 0.85em; }
+    .tps .actionsrow button { white-space: nowrap; font-size: 0.9em; }
+    .tps .spark { height: 32px !important; }
   }
 </style>
-                <p style="font-size: 1.6em; margin: 0.4em 0;">
+                <p class="headline" style="font-size: 1.6em; margin: 0.4em 0;">
                   ${streaming
-                    ? html`⚡ ~${fmtRate(live?.approxTps ?? 0)} <small>t/s streaming</small>${live?.stalled ? html` <small>STALLED</small>` : ""}`
+                    ? html`⚡ ~${fmtRate(live?.approxTps ?? 0)} <small>t/s streaming</small>${live?.stalled ? html` <small title="No new tokens for a while; the stream is paused, not dead — rows still arrive via ● live">STALLED</small>` : ""}`
                     : lastRated
                       ? html`⚡ ${fmtRate(lastRated.tps)} <small>t/s last (${shortModel(lastRated.model)})</small>${lastRated.stalled ? html` <small>stalled mid-stream</small>` : ""}`
                       : html`⚡ – <small>no rated messages yet</small>`}
                   ${state.livePush ? html`<small title="Push channel open: rows arrive as they are written"> ● live</small>` : ""}
                 </p>
                 ${streaming
-                  ? html`<p role="status">Streaming ${shortModel(live?.model ?? "?")}${live?.ttftMs !== undefined && live?.ttftMs >= 0 ? html` — first token in ${fmtMs(live.ttftMs)}` : ""}.</p>`
+                  ? html`<p class="statusline" role="status">Streaming ${shortModel(live?.model ?? "?")}${live?.stalled ? " — stalled mid-stream (no new tokens for a while), still connected" : live?.ttftMs !== undefined && live?.ttftMs >= 0 ? html` — first token in ${fmtMs(live.ttftMs)}` : ""}.</p>`
                   : last
-                    ? html`<p role="status">Last: ${last.output} out tokens in ${fmtDur(last.durationMs)}${last.approx ? " (estimated)" : ""}, ttft ${fmtMs(last.ttftMs)}, cache hit ${cacheHit(last)} at ${clock(last.ts)}${last.streamed ? "" : " — replayed, not generated live"}.</p>`
-                    : html`<p role="status">Ask something in any session in this workspace, then watch this tab.</p>`}
-                <p>
+                    ? html`<p class="statusline" role="status">Last: ${last.output} out tokens in ${fmtDur(last.durationMs)}${last.approx ? " (estimated)" : ""}, ttft ${fmtMs(last.ttftMs)}, cache hit ${cacheHit(last)} at ${clock(last.ts)}${last.streamed ? "" : " — replayed, not generated live"}.</p>`
+                    : html`<p class="statusline" role="status">Ask something in any session in this workspace, then watch this tab.</p>`}
+                <p class="actionsrow">
                   <button
                     ?disabled=${state.fetching}
                     @click=${() => {
@@ -526,7 +533,7 @@ const plugin: PiWebPlugin = {
                     Export turns
                   </button>
                 </p>
-                <p aria-hidden="true" role="img" aria-label="Recent tokens per second, tallest bar fastest" style="display: flex; align-items: flex-end; gap: 2px; height: 48px; margin: 0.6em 0;">
+                <p class="spark" aria-hidden="true" role="img" aria-label="Recent tokens per second, tallest bar fastest" style="display: flex; align-items: flex-end; gap: 2px; height: 48px; margin: 0.6em 0;">
                   ${sparkRows.map(
                     (s) => s.streamed
                       ? html`<span

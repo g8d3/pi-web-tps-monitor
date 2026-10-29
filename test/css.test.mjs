@@ -16,4 +16,6 @@ test("panel CSS pins the phone fixes", () => {
   assert.match(dist, /max-width:\s*15ch/, "model ellipsis on narrow");
   assert.match(dist, /vertical-align:\s*middle/, "uniform row heights");
   assert.match(dist, /\.tps td button \{ min-height: 32px/, "dense table buttons on touch");
+  assert.match(dist, /\.tps \.headline/, "compact mobile headline");
+  assert.match(dist, /\.tps \.spark \{ height: 32px/, "short mobile sparkline");
 });
