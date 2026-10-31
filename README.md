@@ -22,10 +22,10 @@ Then type `/tps` in any Pi session. In PI WEB, enable **TPS Monitor** in
 
 | Surface | Details |
 |---|---|
-| PI WEB `TPS` tab — Messages | Live tok/s while streaming, last-message stats, sparkline, filterable + paginated history (filter by model, session or `#turn`). TTFT, **decode tok/s (generation speed after the first token)**, cache-hit %, STALL / FAIL / replay marks. |
+| PI WEB `TPS` tab — Messages | Live tok/s while streaming (one-line live strip that ticks: rate, tokens, elapsed, `quiet Ns` when the stream pauses), sparkline, filterable + paginated history (filter by model, session or `#turn`). TTFT, **decode tok/s (generation speed after the first token)**, cache-hit %, STALL / FAIL / replay marks. |
 | PI WEB `TPS` tab — Turns | One row per agent step: LLM slice (time, blended tok/s, **decode tok/s**, TTFT) vs tool slice, totals, outcome. Rows expand to the tool breakdown. |
 | PI WEB `TPS` tab — Tools | Every tool call, newest- or slowest-first, plus most-expensive-tools totals. |
-| PI WEB `TPS` tab — Fleet | Per-session rollup: messages, turns, done, avg t/s, tool time, estimated cost (**`+` marks a floor**, see [Reading the numbers](#reading-the-numbers)), **wasted turns + their cost**, context pressure. |
+| PI WEB `TPS` tab — Fleet | Per-session rollup: messages, turns, done, avg t/s, tool time, estimated cost (**`+` marks a floor**, see [Reading the numbers](#reading-the-numbers)), **wasted turns + their cost**, context pressure, and **Export turns** for the preview link below it. |
 | Workspace label | Glanceable `⚡ 42 t/s` next to the workspace name. |
 | Chat `/tps` | `/tps [n]`, `/tps live`, `/tps totals`, `/tps models`, `/tps turns [n]`, `/tps tools [n]`, `/tps fleet`, `/tps cost`, `/tps budget [usd]` (session spend cap, default $5). Warns in chat at 80%/95% context pressure and at 80%/100% of session spend. `/tps cost` and Fleet report wasted spend (failed, aborted or empty turns, priced from turn rows). |
 
@@ -169,7 +169,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what each release changed.
 - `src/companion.ts` — Pi extension. Tracks `message_start/update/end`,
   `turn_start/end` and `tool_execution_end`; writes `.pi-web/tps-live.json`,
   `.pi-web/tps-history.jsonl` and `.pi-web/tps-turns.jsonl` in the workspace.
-- `src/server.ts` — server peer serving `live`, `history` and `turns` reads.
+- `src/server.ts` — server peer serving `live`, `history` and `turns` reads, plus the `watch` push channel (file events debounced to 750 ms, a 2 s heartbeat so the live row moves while a stream thinks, and a channel that ends itself when it cannot push so the panel reconnects instead of freezing).
 - `src/browser/index.ts` — workspace panel + label.
 - `src/browser/protocol.ts` — shared shapes with back-compatible normalization.
 - `src/browser/models.ts` — context limits + indicative prices for known model families; unknown models show `–` instead of invented numbers.

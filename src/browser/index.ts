@@ -16,6 +16,13 @@ import { contextPressure, fleetStats, fmtCost, fmtDur, fmtPartialCost, hasUnacco
 const POLL_MS = 2000;
 const KEEPALIVE_MS = 15000;
 const FETCH_STALE_MS = 1500;
+// The server heartbeats every 2 s on an open channel. Silence for this long
+// means the channel died without telling us: drop it and reconnect, never sit
+// on a zombie that shows `● live` while the panel quietly polls.
+const PUSH_DEAD_MS = 8000;
+const REOPEN_MIN_MS = 5000;
+// A stream whose live row has not moved for this long is quiet, not fast.
+const QUIET_MS = 3000;
 const HISTORY_LIMIT = 500; // match companion MAX_HISTORY + server MAX_LIMIT: the panel sees every row on disk
 const PAGE_SIZE = 10;
 // Sparkline shows the most recent rows: rated messages get height, unrated
@@ -31,6 +38,7 @@ interface PanelState {
   status: string;
   fetching: boolean;
   lastFetch: number;
+  lastFrame: number;
   livePush: boolean;
   filter: string;
   page: number;
@@ -203,7 +211,7 @@ const plugin: PiWebPlugin = {
       const key = keyFor(context.machine.id, context.workspace.projectId, context.workspace.id);
       let state = states.get(key);
       if (!state) {
-        state = { live: undefined, history: [], turns: [], view: "messages", toolSort: "recent", status: "Loading…", fetching: false, lastFetch: 0, livePush: false, filter: "", page: 0, expanded: [] };
+        state = { live: undefined, history: [], turns: [], view: "messages", toolSort: "recent", status: "Loading…", fetching: false, lastFetch: 0, lastFrame: 0, livePush: false, filter: "", page: 0, expanded: [] };
         states.set(key, state);
       }
       return state;
@@ -220,8 +228,9 @@ const plugin: PiWebPlugin = {
       if (turns.length > 0) state.turns = mergeTurns(state.turns, turns, HISTORY_LIMIT);
       else if (state.turns.length === 0) state.turns = [];
       state.lastFetch = Date.now();
+      state.lastFrame = Date.now();
       const n = state.history.length;
-      state.status = n === 0 ? "No samples yet in this workspace." : `${n} recent message(s), ${state.turns.length} turn(s).`;
+      state.status = n === 0 ? "No samples yet in this workspace — ask something in any session, then watch this tab." : `${n} recent message(s), ${state.turns.length} turn(s).`;
     }
 
     interface Accumulating {
@@ -265,12 +274,14 @@ const plugin: PiWebPlugin = {
           void fetchState(context, state);
         }
         state.livePush = true;
+        state.lastFrame = Date.now();
         if (!disposed) context.host.requestRender();
         return;
       }
       // Incremental update (small by construction).
       applyUpdate(state, f.live ?? state.live, f.history ?? [], f.turns ?? []);
       state.livePush = true;
+      state.lastFrame = Date.now();
       if (!disposed) context.host.requestRender();
     }
 
@@ -283,7 +294,7 @@ const plugin: PiWebPlugin = {
       if (freshT.length) state.turns = mergeTurns(state.turns, freshT, HISTORY_LIMIT);
       state.lastFetch = Date.now();
       const n = state.history.length;
-      state.status = n === 0 ? "No samples yet in this workspace." : `${n} recent message(s), ${state.turns.length} turn(s).`;
+      state.status = n === 0 ? "No samples yet in this workspace — ask something in any session, then watch this tab." : `${n} recent message(s), ${state.turns.length} turn(s).`;
     }
 
     async function fetchState(context: WorkspacePanelContext, state: PanelState): Promise<void> {
@@ -314,7 +325,7 @@ const plugin: PiWebPlugin = {
       const peer = context.peer;
       // Throttle attempts: a failing transport must never become a storm.
       if (!peer || typeof peer.openChannel !== "function" || channels.has(key) || opening.has(key)) return;
-      if (Date.now() - (lastAttempt.get(key) ?? 0) < 10000) return;
+      if (Date.now() - (lastAttempt.get(key) ?? 0) < REOPEN_MIN_MS) return;
       lastAttempt.set(key, Date.now());
       opening.add(key);
       const ctrl = new AbortController();
@@ -334,14 +345,17 @@ const plugin: PiWebPlugin = {
           try { ch.close("done"); } catch { /* already closed */ }
           return;
         }
-        channels.set(key, {
+        const entry = {
           close: () => {
             try { ctrl.abort(); } catch { /* already gone */ }
             try { ch.close("done"); } catch { /* already closed */ }
           },
-        });
+        };
+        channels.set(key, entry);
         const done = () => {
-          channels.delete(key);
+          // Only remove the registration this channel owns: a superseded
+          // channel must not delete its replacement (watchdog reconnect race).
+          if (channels.get(key) === entry) channels.delete(key);
           accumulators.delete(key);
           if (!disposed) {
             state.livePush = false;
@@ -356,9 +370,27 @@ const plugin: PiWebPlugin = {
       }
     }
 
+    /** Drop a channel that has gone silent, and reconnect. Without this a
+     * channel whose server side stopped pushing looks perfect (`● live`, no
+     * errors) while every number on screen freezes. */
+    function rewatch(context: WorkspacePanelContext, state: PanelState, key: string): void {
+      const channel = channels.get(key);
+      channels.delete(key);
+      accumulators.delete(key);
+      state.livePush = false;
+      if (channel !== undefined) {
+        try { channel.close(); } catch { /* already gone */ }
+      }
+      // Fetch now so the panel is fresh regardless of what the new channel does.
+      state.lastFetch = 0;
+      void fetchState(context, state);
+      void openWatch(context, state, key);
+    }
+
     function maybeFetch(context: WorkspacePanelContext, state: PanelState): void {
       const key = keyFor(context.machine.id, context.workspace.projectId, context.workspace.id);
-      void openWatch(context, state, key);
+      if (state.livePush && Date.now() - state.lastFrame > PUSH_DEAD_MS) rewatch(context, state, key);
+      else void openWatch(context, state, key);
       // With push live, poll only as a keepalive; otherwise the classic 2 s loop.
       const staleMs = state.livePush ? KEEPALIVE_MS : FETCH_STALE_MS;
       if (!state.fetching && Date.now() - state.lastFetch >= staleMs) {
@@ -378,12 +410,11 @@ const plugin: PiWebPlugin = {
               maybeFetch(context, state);
               const live = state.live;
               const streaming = live?.state === "streaming";
-              // Headline shows the last *rated* message; a replayed tail is a
-              // subline, never the headline (TPS-06).
-              const lastRated: TpsSample | undefined = streaming
-                ? undefined
-                : (live?.last && live.last.streamed ? live.last : state.history.find((s) => s.streamed && s.status === "ok"));
-              const last: TpsSample | undefined = streaming ? undefined : (live?.last ?? state.history[0]);
+              // Age of the live row: the companion writes on streamed deltas, so
+              // an old timestamp mid-stream IS the stall — no need to wait for
+              // the next delta to learn the stream went quiet.
+              const liveAge = live?.updatedAt ? Date.now() - Date.parse(live.updatedAt) : Number.POSITIVE_INFINITY;
+              const quiet = streaming && liveAge > QUIET_MS;
               const ratedCount = state.history.filter((s) => s.streamed && s.status === "ok").length;
               const unratedCount = state.history.length - ratedCount - state.history.filter((s) => s.status === "failed").length;
               const sparkRows = state.history.slice(0, SPARKLINE_LIMIT).reverse();
@@ -480,59 +511,24 @@ const plugin: PiWebPlugin = {
     .tps .sessbtn { max-width: 12ch; }
     .tps .sortrow { display: flex; gap: 6px; }
     .tps .sortrow button { flex: 1 1 0; white-space: nowrap; }
-    /* The live header block (headline + status + buttons + sparkline) ate
-       half a phone screen. Compact it: single-line headline, small status,
-       short sparkline. Buttons keep full height (touch) but stop wrapping. */
-    .tps .headline { font-size: 1.15em !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .tps .statusline { font-size: 0.85em; }
-    .tps .actionsrow button { white-space: nowrap; font-size: 0.9em; }
+    /* The live strip is one line on a phone (this used to be headline +
+       status + buttons + sparkline: half a screen of repeated numbers). */
+    .tps .liveline { font-size: 1em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .tps .spark { height: 32px !important; }
   }
 </style>
-                <p class="headline" style="font-size: 1.6em; margin: 0.4em 0;">
-                  ${streaming
-                    ? html`⚡ ~${fmtRate(live?.approxTps ?? 0)} <small>t/s streaming</small>${live?.stalled ? html` <small title="No new tokens for a while; the stream is paused, not dead — rows still arrive via ● live">STALLED</small>` : ""}`
-                    : lastRated
-                      ? html`⚡ ${fmtRate(lastRated.tps)} <small>t/s last (${shortModel(lastRated.model)})</small>${lastRated.stalled ? html` <small>stalled mid-stream</small>` : ""}`
-                      : html`⚡ – <small>no rated messages yet</small>`}
-                  ${state.livePush ? html`<small title="Push channel open: rows arrive as they are written"> ● live</small>` : ""}
-                </p>
                 ${streaming
-                  ? html`<p class="statusline" role="status">Streaming ${shortModel(live?.model ?? "?")}${live?.stalled ? " — stalled mid-stream (no new tokens for a while), still connected" : live?.ttftMs !== undefined && live?.ttftMs >= 0 ? html` — first token in ${fmtMs(live.ttftMs)}` : ""}.</p>`
-                  : last
-                    ? html`<p class="statusline" role="status">Last: ${last.output} out tokens in ${fmtDur(last.durationMs)}${last.approx ? " (estimated)" : ""}, ttft ${fmtMs(last.ttftMs)}, cache hit ${cacheHit(last)} at ${clock(last.ts)}${last.streamed ? "" : " — replayed, not generated live"}.</p>`
-                    : html`<p class="statusline" role="status">Ask something in any session in this workspace, then watch this tab.</p>`}
-                <p class="actionsrow">
-                  <button
-                    ?disabled=${state.fetching}
-                    @click=${() => {
-                      state.lastFetch = 0;
-                      void fetchState(context, state);
-                    }}
-                  >
-                    Refresh
-                  </button>
-                  <button
-                    @click=${async () => {
-                      try {
-                        if (!context.peer?.request) throw new Error("no peer");
-                        const turns = await context.peer.request("turns", { limit: HISTORY_LIMIT });
-                        const blob = new Blob([JSON.stringify(turns)], { type: "application/json" });
-                        const a = document.createElement("a");
-                        a.href = URL.createObjectURL(blob);
-                        a.download = `tps-turns-${context.workspace.id}.json`;
-                        a.click();
-                        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-                      } catch {
-                        state.status = "Export failed: peer request rejected.";
-                        context.host.requestRender();
-                      }
-                    }}
-                    title="Download the turn file this Fleet view reads (input for the free self-serve preview)"
-                  >
-                    Export turns
-                  </button>
-                </p>
+                  ? html`<p class="liveline" role="status" style="margin: 0.4em 0;">
+                      ⚡ ~${fmtRate(live?.approxTps ?? 0)} <small>t/s streaming</small>
+                      <small>· ${Math.round((live?.chars ?? 0) / 4)} tok · ${fmtDur(live?.elapsedMs ?? 0)}</small>
+                      ${quiet
+                        ? html`<small title="Nothing streamed for this long — the provider is thinking or the stream is paused, not disconnected">· ⚠ quiet ${fmtDur(liveAge)}</small>`
+                        : live?.ttftMs !== undefined && live.ttftMs >= 0
+                          ? html`<small>· ttft ${fmtMs(live.ttftMs)}</small>`
+                          : ""}
+                      <small title=${state.livePush ? "Push channel open: the numbers arrive as they are written" : "Push channel down: polling every 2 s"}>· ${state.livePush ? "● live" : "○ polling"}</small>
+                    </p>`
+                  : ""}
                 <p class="spark" aria-hidden="true" role="img" aria-label="Recent tokens per second, tallest bar fastest" style="display: flex; align-items: flex-end; gap: 2px; height: 48px; margin: 0.6em 0;">
                   ${sparkRows.map(
                     (s) => s.streamed
@@ -738,7 +734,25 @@ const plugin: PiWebPlugin = {
                   ? html`<p><small>Free self-serve preview of the file this view reads
                       (<code>.pi-web/tps-turns.jsonl</code>, parsed in your browser, nothing uploaded):
                       <a href="https://focalis.cc/audit/preview/" target="_blank" rel="noopener">focalis.cc/audit/preview</a>.
-                      The audit adds what a turn row cannot contain — the process boot before the first event.</small></p>`
+                      The audit adds what a turn row cannot contain — the process boot before the first event.</small></p>
+                    <p><button
+                      @click=${async () => {
+                        try {
+                          if (!context.peer?.request) throw new Error("no peer");
+                          const turns = await context.peer.request("turns", { limit: HISTORY_LIMIT });
+                          const blob = new Blob([JSON.stringify(turns)], { type: "application/json" });
+                          const a = document.createElement("a");
+                          a.href = URL.createObjectURL(blob);
+                          a.download = `tps-turns-${context.workspace.id}.json`;
+                          a.click();
+                          setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+                        } catch {
+                          state.status = "Export failed: peer request rejected.";
+                          context.host.requestRender();
+                        }
+                      }}
+                      title="Download the turn file this Fleet view reads (input for the free self-serve preview)"
+                    >Export turns</button></p>`
                   : ""}
               </section>`;
             },

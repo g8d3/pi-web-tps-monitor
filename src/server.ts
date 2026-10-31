@@ -5,6 +5,15 @@
 // TPS-26: "watch" opens a push channel. The server fs.watches the workspace
 // .jsonl files and pushes fresh snapshots, so the panel stops refetching
 // 500+500 rows every 2 s. Polling remains as the fallback.
+//
+// TPS-41: a channel is never left open-but-mute. A file event pushes within
+// WATCH_DEBOUNCE_MS and a heartbeat pushes the live row at least every
+// HEARTBEAT_MS, so the panel is fresh while a stream is thinking (no file
+// writes between deltas) instead of freezing on the last value. If the watch
+// cannot start or a frame cannot be sent, the channel ENDS (closed promise)
+// so the browser notices and reconnects — the previous code closed only its
+// own watcher and left the transport open, which is why a long-lived tab fell
+// back to silent keepalive polling while still showing `● live`.
 
 import { readFileSync, watch } from "node:fs";
 import { join } from "node:path";
@@ -17,7 +26,8 @@ const TURNS_FILE = ".pi-web/tps-turns.jsonl";
 const LIVE_FILE = ".pi-web/tps-live.json";
 const MAX_LIMIT = 500; // matches companion MAX_HISTORY so the panel can see every row on disk
 const WATCH_DEBOUNCE_MS = 750;
-const MAX_WATCH_SNAPSHOTS = 200; // a channel that never closes still stops eventually
+const HEARTBEAT_MS = 2000; // pushes the live row even when no file changed (thinking/tool gaps)
+const CHUNK = 50; // one bounded frame cannot carry 500 rows: snapshots go out in chunks
 
 const UNKNOWN_LIVE: TpsLive = {
   state: "unknown",
@@ -119,70 +129,34 @@ const plugin = {
           const root = context.workspace.path;
           const { limit } = inputOf(context.input);
           const cap = limit ?? MAX_LIMIT;
-          let sent = 0;
           // Newest ts already delivered; later pushes carry only newer rows.
           let cursor = "";
           let timer: ReturnType<typeof setTimeout> | undefined;
+          let heartbeat: ReturnType<typeof setInterval> | undefined;
           let watcher: ReturnType<typeof watch> | undefined;
+          let ended = false;
+          // Resolving this tells the host to close the transport, which is the
+          // only way the browser learns the channel is gone and reconnects.
+          let resolveClosed: () => void = () => {};
+          const closed = new Promise<void>((resolve) => {
+            resolveClosed = resolve;
+          });
           const track = (rows: Array<{ ts: string }>): void => {
             for (const r of rows) {
               if (r.ts > cursor) cursor = r.ts;
             }
           };
-          // One bounded frame cannot carry 500 rows: overflow throws and kills
-          // the channel. The snapshot goes out in small chunk frames instead.
-          const CHUNK = 50;
-          const pushFull = () => {
-            if (context.signal.aborted) return;
-            sent += 1;
-            try {
-              const snap = snapshot(root, { limit: cap });
-              track(snap.history);
-              track(snap.turns);
-              context.send(toJson({ type: "snapshot-start", live: snap.live, historyTotal: snap.history.length, turnsTotal: snap.turns.length }));
-              for (let i = 0; i < snap.history.length; i += CHUNK) {
-                context.send(toJson({ type: "snapshot-part", kind: "history", rows: snap.history.slice(i, i + CHUNK) }));
-              }
-              for (let i = 0; i < snap.turns.length; i += CHUNK) {
-                context.send(toJson({ type: "snapshot-part", kind: "turns", rows: snap.turns.slice(i, i + CHUNK) }));
-              }
-              context.send(toJson({ type: "snapshot-done" }));
-            } catch {
-              dispose();
-            }
-          };
-          const push = () => {
-            if (context.signal.aborted) return;
-            sent += 1;
-            if (sent > MAX_WATCH_SNAPSHOTS) {
-              dispose();
-              return;
-            }
-            try {
-              const snap = snapshot(root, { limit: cap });
-              const fresh = {
-                live: snap.live,
-                history: snap.history.filter((r) => r.ts > cursor),
-                turns: snap.turns.filter((r) => r.ts > cursor),
-              };
-              track(snap.history);
-              track(snap.turns);
-              context.send(toJson({ type: "update", ...fresh }));
-            } catch {
-              dispose();
-            }
-          };
-          const schedule = () => {
-            if (timer !== undefined) return;
-            timer = setTimeout(() => {
-              timer = undefined;
-              push();
-            }, WATCH_DEBOUNCE_MS);
-          };
-          const dispose = () => {
+          /** End the channel for good: stop timers, drop the watcher, tell the host. */
+          const stop = (): void => {
+            if (ended) return;
+            ended = true;
             if (timer !== undefined) {
               clearTimeout(timer);
               timer = undefined;
+            }
+            if (heartbeat !== undefined) {
+              clearInterval(heartbeat);
+              heartbeat = undefined;
             }
             try {
               watcher?.close();
@@ -190,8 +164,67 @@ const plugin = {
               // already closed
             }
             watcher = undefined;
+            resolveClosed();
           };
-          context.signal.addEventListener("abort", dispose, { once: true });
+          /** One frame; a refused frame ends the channel instead of going mute. */
+          const send = (frame: Record<string, unknown>): boolean => {
+            if (ended || context.signal.aborted) return false;
+            try {
+              context.send(toJson(frame));
+              return true;
+            } catch {
+              stop();
+              return false;
+            }
+          };
+          const pushFull = (): void => {
+            const snap = snapshot(root, { limit: cap });
+            track(snap.history);
+            track(snap.turns);
+            if (!send({ type: "snapshot-start", live: snap.live, historyTotal: snap.history.length, turnsTotal: snap.turns.length })) return;
+            for (let i = 0; i < snap.history.length; i += CHUNK) {
+              if (!send({ type: "snapshot-part", kind: "history", rows: snap.history.slice(i, i + CHUNK) })) return;
+            }
+            for (let i = 0; i < snap.turns.length; i += CHUNK) {
+              if (!send({ type: "snapshot-part", kind: "turns", rows: snap.turns.slice(i, i + CHUNK) })) return;
+            }
+            send({ type: "snapshot-done" });
+          };
+          /** Incremental frame: always the live row, plus rows newer than the cursor. */
+          const push = (): void => {
+            if (ended || context.signal.aborted) return;
+            const snap = snapshot(root, { limit: cap });
+            const fresh = {
+              live: snap.live,
+              history: snap.history.filter((r) => r.ts > cursor),
+              turns: snap.turns.filter((r) => r.ts > cursor),
+            };
+            track(snap.history);
+            track(snap.turns);
+            send({ type: "update", ...fresh });
+          };
+          const schedule = (): void => {
+            if (ended || timer !== undefined) return;
+            timer = setTimeout(() => {
+              timer = undefined;
+              push();
+            }, WATCH_DEBOUNCE_MS);
+            if (typeof timer.unref === "function") timer.unref();
+          };
+          context.signal.addEventListener("abort", stop, { once: true });
+          // A heartbeat frame carries only the live row: parsing 500 history +
+          // 500 turn rows every 2 s per open panel would put the monitor's own
+          // read tax back (v18). Row scans happen on real file events.
+          let rowsDirty = false;
+          const beat = (): void => {
+            if (ended || context.signal.aborted) return;
+            if (rowsDirty) {
+              rowsDirty = false;
+              push();
+              return;
+            }
+            send({ type: "update", live: readLive(root), history: [], turns: [] });
+          };
           try {
             watcher = watch(join(root, ".pi-web"), { persistent: false }, (_event, filename) => {
               if (
@@ -199,23 +232,31 @@ const plugin = {
                 filename === "tps-history.jsonl" ||
                 filename === "tps-turns.jsonl"
               ) {
+                if (filename !== "tps-live.json") rowsDirty = true;
                 schedule();
               }
             });
-            watcher.on("error", dispose);
+            // A watcher that dies silently is the bug this exists to prevent.
+            watcher.on("error", stop);
           } catch {
-            // unwatched workspace (read-only fs): single snapshot, then close
+            // Unwatched workspace (read-only fs): serve one snapshot, then end
+            // the channel so the panel keeps its ordinary polling fallback.
             pushFull();
-            dispose();
-            return { receive() {} };
+            stop();
+            return { receive() {}, closed };
           }
           pushFull(); // initial snapshot
+          // Heartbeat: live numbers keep arriving through thinking/tool gaps,
+          // where the companion writes nothing for minutes at a time.
+          heartbeat = setInterval(beat, HEARTBEAT_MS);
+          if (typeof heartbeat.unref === "function") heartbeat.unref();
           return {
             receive() {
               // browser-authored frames are keepalives; the server pushes.
             },
+            closed,
             close() {
-              dispose();
+              stop();
             },
           };
         },

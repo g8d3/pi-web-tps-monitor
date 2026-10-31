@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.12.0 — the live numbers are actually live
+
+Reported: "the TPS plugin still polls instead of receiving when new data is
+available, and the live stats do not seem real time." They were not. The
+0.11.0 channel stopped pushing after 200 snapshots — and on any refused frame,
+and on a watcher error — by closing only its own `fs.watch` and leaving the
+transport open. The browser kept `● live` on screen while the panel fell back
+to a 15 s keepalive poll, so the headline froze on its last value. 97 tests
+pass (87 before).
+
+- **The channel can no longer go mute (TPS-41).** A refused frame or a dead
+  watcher resolves the channel's `closed` promise, so the host closes the
+  socket and the panel reconnects instead of sitting on a dead channel.
+- **Heartbeat every 2 s.** The live row is pushed even when no file changed,
+  which is exactly the window a thinking stream writes nothing. Row files are
+  re-read only on real file events, so the heartbeat costs one small read.
+- **No snapshot lifetime cap.** The 200-frame counter is gone; the panel's own
+  silence watchdog (`PUSH_DEAD_MS` = 8 s) drops and rebuilds a channel that
+  stops talking, and refetches immediately so the screen is fresh either way.
+- **`quiet Ns` instead of `STALLED`.** Staleness is derived from the age of the
+  live row, so it appears when the stream actually stops instead of waiting for
+  the next delta to reveal it.
+- **Header de-duplicated (TPS-42).** The last-message headline, the
+  `Last: … out tokens …` status line and the Refresh button all repeated the
+  newest table row: removed. One compact live strip remains, only while a
+  message streams (no table row exists for an in-flight message) and it now
+  ticks. `Export turns` moved into the Fleet view, beside the preview link it
+  feeds.
+
 ## v0.11.0 — push, links and honest tables (TPS-01..40)
 
 Photo review of all four views on desktop and phone (see `IMPROVEMENTS.md`
