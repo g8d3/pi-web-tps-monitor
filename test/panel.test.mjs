@@ -13,7 +13,9 @@ import plugin from "../dist/browser/index.js";
 // message finishes. Rendering is exercised for real so a broken template or a
 // removed-section regression fails here instead of on the owner's screen.
 
-const dist = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "browser", "index.js"), "utf8");
+const distDir = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "browser");
+const dist = readFileSync(join(distDir, "index.js"), "utf8");
+const distPaired = readFileSync(join(distDir, "paired.js"), "utf8");
 
 /** A stand-in for lit's html tag: keeps strings/values so the tree can be read. */
 function html(strings, ...values) {
@@ -74,29 +76,61 @@ function makeWorkspace() {
 
 function harness(live) {
   const cwd = makeWorkspace();
-  const frames = [];
+  const rows = [sample("2026-01-01T00:00:01.000Z")];
   const rendered = [];
+  const seen = { requests: [], sockets: [], opens: [] };
   const host = { requestRender: () => {} };
+  // No context.peer: the split panel must reach the backend over the paired
+  // proxy (plain HTTP + WebSocket), like it does in the real host.
   const context = {
     machine: { id: "m" },
     workspace: { id: "w", projectId: "p", path: cwd },
     host,
-    peer: {
-      request: async (operation) => {
-        if (operation === "live") return live;
-        if (operation === "history") return [sample("2026-01-01T00:00:01.000Z")];
-        return [];
-      },
-      openChannel: async (_operation, _input, options) => {
-        // Behave like the real server: one chunked snapshot, then silence.
-        const rows = [sample("2026-01-01T00:00:01.000Z")];
-        options.onData({ type: "snapshot-start", live, historyTotal: rows.length, turnsTotal: 0 });
-        options.onData({ type: "snapshot-part", kind: "history", rows });
-        options.onData({ type: "snapshot-done" });
-        return { closed: new Promise(() => {}), close: () => {}, send: () => {} };
-      },
-    },
     navigate: undefined,
+  };
+  globalThis.location = { protocol: "http:", host: "h" };
+  globalThis.fetch = async (url, opts) => {
+    const text = String(url);
+    const payload = text === "/api/plugins"
+      ? { plugins: [{ id: "tps-monitor", server: { activeRevision: "rev-test" } }] }
+      : null;
+    if (payload) {
+      const body = JSON.stringify(payload);
+      return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+    }
+    const body = JSON.parse(opts.body);
+    if (body.revision !== "rev-test") throw new Error("panel must send the backend's active revision");
+    const op = text.slice(text.lastIndexOf("/") + 1);
+    seen.requests.push(op);
+    const data = op === "live" ? live : op === "history" ? rows : op === "turns" ? [] : null;
+    const encoded = JSON.stringify(data);
+    return { ok: true, status: 200, text: async () => encoded, json: async () => JSON.parse(encoded) };
+  };
+  globalThis.WebSocket = class {
+    constructor(url) {
+      seen.sockets.push(String(url));
+      this.handlers = {};
+      setTimeout(() => {
+        this.emit("open");
+        // Behave like the real server: ready, one chunked snapshot, then silence.
+        this.emit("message", { data: JSON.stringify({ version: 1, kind: "ready" }) });
+        this.emit("message", { data: JSON.stringify({ version: 1, kind: "data", data: { type: "snapshot-start", live, historyTotal: rows.length, turnsTotal: 0 } }) });
+        this.emit("message", { data: JSON.stringify({ version: 1, kind: "data", data: { type: "snapshot-part", kind: "history", rows } }) });
+        this.emit("message", { data: JSON.stringify({ version: 1, kind: "data", data: { type: "snapshot-done" } }) });
+      }, 0);
+    }
+    addEventListener(event, fn) {
+      (this.handlers[event] ??= []).push(fn);
+    }
+    emit(event, arg) {
+      for (const fn of this.handlers[event] ?? []) fn(arg);
+    }
+    send(frame) {
+      seen.opens.push(String(frame));
+    }
+    close() {
+      this.emit("close");
+    }
   };
   const activation = plugin.activate({ html, svg: html, apiVersion: 4 });
   const panel = activation.contributions.workspacePanels[0];
@@ -105,7 +139,7 @@ function harness(live) {
     rendered.push(tree);
     return tree;
   };
-  return { cwd, context, frames, render, activation };
+  return { cwd, context, seen, render, activation };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -161,4 +195,20 @@ test("the built panel keeps automatic reconnection wiring", () => {
   assert.match(dist, /PUSH_DEAD_MS/, "a silent channel is detected");
   assert.match(dist, /rewatch/, "and replaced instead of trusted");
   assert.doesNotMatch(dist, /○ polling/, "no push-state text above the table: silent recovery only");
+});
+
+test("the split panel reaches the backend over the paired proxy, never an in-process peer", async () => {
+  const live = { state: "idle", model: "m", chars: 0, elapsedMs: 0, approxTps: 0, updatedAt: new Date().toISOString() };
+  const { render, seen } = harness(live);
+  render(); // first render kicks off fetch + channel
+  await tick();
+  await tick();
+  assert.ok(seen.requests.includes("live"), "reads via paired POST: " + seen.requests.join(","));
+  assert.ok(seen.requests.includes("history"), "reads via paired POST: " + seen.requests.join(","));
+  assert.ok(seen.sockets.some((u) => u.includes("/channels/watch")), "watch opens over the paired WebSocket route");
+  assert.ok(seen.opens.some((f) => f.includes('"kind":"open"') && f.includes('"revision":"rev-test"')), "channel handshake carries the open envelope with the backend revision");
+  const text = textOf(render()).join("");
+  assert.match(text, /Messages/, "the table renders from proxy data");
+  assert.match(distPaired, /paired-plugin-backends/, "the built panel calls the proxy, not context.peer");
+  assert.match(distPaired, /\/channels\/watch/, "watch opens over the paired WebSocket route");
 });

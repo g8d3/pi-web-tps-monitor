@@ -1,7 +1,7 @@
 {
   "name": "pi-web-tps-monitor",
   "description": "Live tokens/sec, TTFT, per-turn step timing and per-tool costs for Pi + PI WEB",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -39,11 +39,14 @@
     "plugins": [
       {
         "id": "tps-monitor",
-        "browserRoot": "dist/browser",
-        "module": "dist/browser/index.js",
         "serverModule": "dist/server.js",
         "machineSpecific": true,
         "defaultEnabled": true
+      },
+      {
+        "id": "tps-monitor.panel",
+        "browserRoot": "dist/browser",
+        "module": "dist/browser/index.js"
       }
     ]
   }

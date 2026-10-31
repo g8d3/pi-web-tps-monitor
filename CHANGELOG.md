@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.13.0 — the tab survives updates (split panel + server)
+
+Any file change under this package used to 404 the TPS tab until the session
+daemon restarted: the single plugin entry pinned its browser asset to the
+daemon's active revision. The entry is now split the way p4.cycles and
+p4.models already are — `tps-monitor` is server-only, `tps-monitor.panel` is
+browser-only and served fresh on every page reload. Panel updates need only a
+browser reload from here on; backend updates still wait for the next natural
+daemon restart, and the panel keeps working against the old running backend.
+97 tests pass (96 before).
+
+- **Paired-proxy transport (`src/browser/paired.ts`).** The panel no longer
+  uses the in-process `context.peer`. Reads go over plain HTTP POST to
+  `/api/paired-plugin-backends/tps-monitor/...` with the backend's active
+  revision from `/api/plugins`; the `watch` channel opens over the paired
+  WebSocket route (`.../channels/watch`) speaking the host's open/ready/data
+  envelope, so live push, heartbeat and honest reconnects behave exactly as
+  before. Polling remains the fallback.
+- **Server untouched.** `src/server.ts` implements the same peer operations
+  (`live`, `history`, `turns`, channel `watch`); the host translates the
+  proxy transports to the same context, so old backends stay compatible.
+- **Tests.** `test/panel.test.mjs` now stubs `fetch` + `WebSocket` instead of
+  a fake peer (the harness has no `context.peer` at all), plus one new test
+  asserting the built panel calls the proxy route and sends the open envelope
+  with the backend revision.
+
 ## v0.12.0 — the live numbers are actually live
 
 Reported: "the TPS plugin still polls instead of receiving when new data is

@@ -12,6 +12,7 @@ import type {
 import { isTpsLive, mergeSamples, mergeTurns, normalizeSample, normalizeTurn, UNKNOWN_TTFT, type TpsLive, type TpsSample, type TpsTurn } from "./protocol.js";
 
 import { contextPressure, fleetStats, fmtCost, fmtDur, fmtPartialCost, hasUnaccountedGap, perModelCost, sessionLabel, shortSessionId, unaccountedMs } from "./models.js";
+import { openWatchChannel, pairedRequest } from "./paired.js";
 
 const POLL_MS = 2000;
 const KEEPALIVE_MS = 15000;
@@ -296,16 +297,13 @@ const plugin: PiWebPlugin = {
 
     async function fetchState(context: WorkspacePanelContext, state: PanelState): Promise<void> {
       if (state.fetching) return;
-      if (!context.peer?.request) {
-        state.status = "Package backend unavailable on this machine (enable plugin + restart session daemon).";
-        return;
-      }
+      const scope = { projectId: context.workspace.projectId, workspaceId: context.workspace.id };
       state.fetching = true;
       try {
         const [liveRaw, histRaw, turnRaw]: unknown[] = await Promise.all([
-          context.peer.request("live", null),
-          context.peer.request("history", { limit: HISTORY_LIMIT }),
-          context.peer.request("turns", { limit: HISTORY_LIMIT }),
+          pairedRequest(scope, "live", null),
+          pairedRequest(scope, "history", { limit: HISTORY_LIMIT }),
+          pairedRequest(scope, "turns", { limit: HISTORY_LIMIT }),
         ]);
         applySnapshot(state, liveRaw, histRaw, turnRaw);
       } catch (error) {
@@ -317,18 +315,17 @@ const plugin: PiWebPlugin = {
     }
 
     /** Push channel (TPS-26): the server watches the workspace files and sends
-     * fresh rows; polling below becomes the fallback. Refresh stays manual. */
+     * fresh rows over the paired-backend WebSocket; polling below stays the
+     * fallback for a refused or failed channel. */
     async function openWatch(context: WorkspacePanelContext, state: PanelState, key: string): Promise<void> {
-      const peer = context.peer;
       // Throttle attempts: a failing transport must never become a storm.
-      if (!peer || typeof peer.openChannel !== "function" || channels.has(key) || opening.has(key)) return;
+      if (channels.has(key) || opening.has(key)) return;
       if (Date.now() - (lastAttempt.get(key) ?? 0) < REOPEN_MIN_MS) return;
       lastAttempt.set(key, Date.now());
       opening.add(key);
-      const ctrl = new AbortController();
       try {
-        const ch = await peer.openChannel("watch", { limit: HISTORY_LIMIT }, {
-          signal: ctrl.signal,
+        const scope = { projectId: context.workspace.projectId, workspaceId: context.workspace.id };
+        const ch = await openWatchChannel(scope, { limit: HISTORY_LIMIT }, {
           onData: (data) => {
             try {
               onFrame(key, state, context, data);
@@ -338,16 +335,10 @@ const plugin: PiWebPlugin = {
           },
         });
         if (disposed) {
-          try { ctrl.abort(); } catch { /* already gone */ }
-          try { ch.close("done"); } catch { /* already closed */ }
+          try { ch.close(); } catch { /* already closed */ }
           return;
         }
-        const entry = {
-          close: () => {
-            try { ctrl.abort(); } catch { /* already gone */ }
-            try { ch.close("done"); } catch { /* already closed */ }
-          },
-        };
+        const entry = { close: () => { try { ch.close(); } catch { /* already closed */ } } };
         channels.set(key, entry);
         const done = () => {
           // Only remove the registration this channel owns: a superseded
@@ -359,9 +350,9 @@ const plugin: PiWebPlugin = {
             context.host.requestRender();
           }
         };
-        if (ch.closed) void ch.closed.then(done, done);
+        void ch.closed.then(done, done);
       } catch {
-        // host without channels (or watch unsupported): polling covers it.
+        // backend unreachable or watch unsupported: polling covers it.
       } finally {
         opening.delete(key);
       }
@@ -716,8 +707,7 @@ const plugin: PiWebPlugin = {
                     <p><button
                       @click=${async () => {
                         try {
-                          if (!context.peer?.request) throw new Error("no peer");
-                          const turns = await context.peer.request("turns", { limit: HISTORY_LIMIT });
+                          const turns = await pairedRequest({ projectId: context.workspace.projectId, workspaceId: context.workspace.id }, "turns", { limit: HISTORY_LIMIT });
                           const blob = new Blob([JSON.stringify(turns)], { type: "application/json" });
                           const a = document.createElement("a");
                           a.href = URL.createObjectURL(blob);
@@ -725,7 +715,7 @@ const plugin: PiWebPlugin = {
                           a.click();
                           setTimeout(() => URL.revokeObjectURL(a.href), 5000);
                         } catch {
-                          state.status = "Export failed: peer request rejected.";
+                          state.status = "Export failed: backend request rejected.";
                           context.host.requestRender();
                         }
                       }}
