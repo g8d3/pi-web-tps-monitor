@@ -19,15 +19,13 @@ pass (87 before).
 - **No snapshot lifetime cap.** The 200-frame counter is gone; the panel's own
   silence watchdog (`PUSH_DEAD_MS` = 8 s) drops and rebuilds a channel that
   stops talking, and refetches immediately so the screen is fresh either way.
-- **`quiet Ns` instead of `STALLED`.** Staleness is derived from the age of the
-  live row, so it appears when the stream actually stops instead of waiting for
-  the next delta to reveal it.
-- **Header de-duplicated (TPS-42).** The last-message headline, the
-  `Last: … out tokens …` status line and the Refresh button all repeated the
-  newest table row: removed. One compact live strip remains, only while a
-  message streams (no table row exists for an in-flight message) and it now
-  ticks. `Export turns` moved into the Fleet view, beside the preview link it
-  feeds.
+- **Nothing renders above the tables any more (TPS-42).** The last-message
+  headline, the `Last: … out tokens …` status line, the one-line live strip and
+  the Refresh button all repeated what the newest table row already says. The
+  owner's verdict — "the table is enough" — settled it: the panel is sparkline →
+  view switcher → filter → table, and the workspace label keeps the in-flight
+  `⚡ N t/s`. `Export turns` moved into the Fleet view, beside the preview link
+  it feeds.
 
 ## v0.11.0 — push, links and honest tables (TPS-01..40)
 

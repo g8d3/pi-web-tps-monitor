@@ -110,7 +110,7 @@ function harness(live) {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
-test("streaming renders one live strip and nothing else redundant", async () => {
+test("streaming adds nothing above the tables (owner: the table is enough)", async () => {
   const live = {
     state: "streaming", model: "muse-spark-1.3", chars: 400, elapsedMs: 4000,
     approxTps: 11, updatedAt: new Date().toISOString(), ttftMs: 300, stalled: false,
@@ -119,35 +119,29 @@ test("streaming renders one live strip and nothing else redundant", async () => 
   render(); // first render kicks off the fetch
   await tick();
   const text = textOf(render()).join("");
-  assert.match(text, /t\/s streaming/, "in-flight rate is shown");
-  assert.match(text, /● live/, "push channel is reported as live");
-  assert.doesNotMatch(text, /STALLED/, "stall wording is the quiet marker now, not a shout");
+  assert.doesNotMatch(text, /t\/s streaming/, "no live strip while streaming");
+  assert.doesNotMatch(text, /quiet \d+/, "no staleness line");
+  assert.doesNotMatch(text, /● live|○ polling/, "no push indicator above the table");
   assert.doesNotMatch(text, /Refresh/, "no manual Refresh button");
   assert.doesNotMatch(text, /Export turns/, "Export left the header");
   assert.doesNotMatch(text, /Last: .* out tokens/, "no duplicate last-message line");
+  assert.match(text, /Messages/, "the view switcher is the first thing offered");
 });
 
-test("a quiet live row is labelled as quiet, not as current speed", async () => {
-  const live = {
-    state: "streaming", model: "muse-spark-1.3", chars: 400, elapsedMs: 4000,
-    approxTps: 11, updatedAt: new Date(Date.now() - 9000).toISOString(), stalled: false,
+test("idle and streaming render the same header shape", async () => {
+  const streaming = harness({
+    state: "streaming", model: "m", chars: 40, elapsedMs: 1000, approxTps: 9,
+    updatedAt: new Date().toISOString(), stalled: true,
+  });
+  const idle = harness({ state: "idle", model: "m", chars: 0, elapsedMs: 0, approxTps: 0, updatedAt: new Date().toISOString() });
+  streaming.render();
+  idle.render();
+  await tick();
+  const strip = (tree) => {
+    const parts = textOf(tree).join("").split("</style>")[1] ?? "";
+    return parts.split("<p")[0].trim();
   };
-  const { render } = harness(live);
-  render(); // first render kicks off the fetch
-  await tick();
-  const text = textOf(render()).join("");
-  assert.match(text, /quiet \d+/, "age of the live row surfaces mid-stream");
-});
-
-test("idle renders the table without any repeated header block", async () => {
-  const live = { state: "idle", model: "m", chars: 0, elapsedMs: 0, approxTps: 0, updatedAt: new Date().toISOString() };
-  const { render } = harness(live);
-  render(); // first render kicks off the fetch
-  await tick();
-  const text = textOf(render()).join("");
-  assert.doesNotMatch(text, /t\/s streaming/, "no streaming strip while idle");
-  assert.doesNotMatch(text, /⚡ 20 <small>t\/s last/, "no idle headline repeating row 1");
-  assert.match(text, /Messages/, "view switcher present");
+  assert.equal(strip(streaming.render()), strip(idle.render()), "the live state never adds a block above the tables");
 });
 
 test("Export turns lives in the Fleet view and still works", async () => {
@@ -166,5 +160,5 @@ test("Export turns lives in the Fleet view and still works", async () => {
 test("the built panel keeps automatic reconnection wiring", () => {
   assert.match(dist, /PUSH_DEAD_MS/, "a silent channel is detected");
   assert.match(dist, /rewatch/, "and replaced instead of trusted");
-  assert.match(dist, /○ polling/, "the strip says so when push is down");
+  assert.doesNotMatch(dist, /○ polling/, "no push-state text above the table: silent recovery only");
 });

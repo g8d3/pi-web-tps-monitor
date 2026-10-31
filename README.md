@@ -22,7 +22,7 @@ Then type `/tps` in any Pi session. In PI WEB, enable **TPS Monitor** in
 
 | Surface | Details |
 |---|---|
-| PI WEB `TPS` tab — Messages | Live tok/s while streaming (one-line live strip that ticks: rate, tokens, elapsed, `quiet Ns` when the stream pauses), sparkline, filterable + paginated history (filter by model, session or `#turn`). TTFT, **decode tok/s (generation speed after the first token)**, cache-hit %, STALL / FAIL / replay marks. |
+| PI WEB `TPS` tab — Messages | Sparkline + filterable, paginated history (filter by model, session or `#turn`); no header block — the newest row is the newest message and the workspace label carries the in-flight rate. TTFT, **decode tok/s (generation speed after the first token)**, cache-hit %, STALL / FAIL / replay marks. |
 | PI WEB `TPS` tab — Turns | One row per agent step: LLM slice (time, blended tok/s, **decode tok/s**, TTFT) vs tool slice, totals, outcome. Rows expand to the tool breakdown. |
 | PI WEB `TPS` tab — Tools | Every tool call, newest- or slowest-first, plus most-expensive-tools totals. |
 | PI WEB `TPS` tab — Fleet | Per-session rollup: messages, turns, done, avg t/s, tool time, estimated cost (**`+` marks a floor**, see [Reading the numbers](#reading-the-numbers)), **wasted turns + their cost**, context pressure, and **Export turns** for the preview link below it. |
